@@ -541,6 +541,17 @@ def cmd_pose(a: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------- serve
+# IMaC Lab text logo (same look as the lab's other GitHub Pages apps): red bar + "MaC Lab", links to the lab site
+LAB_URL = "https://imac.super.site"
+LAB_LOGO_CSS = (".lab-logo{display:inline-flex;align-items:baseline;white-space:nowrap;font:700 21px/1 Calibri,Carlito,"
+                "'Segoe UI','Helvetica Neue',Arial,sans-serif;letter-spacing:-.01em;color:#f8fafc;text-decoration:none;"
+                "padding:4px 7px;margin:-4px -1px -4px -7px;border-radius:7px;transition:background .12s}"
+                ".lab-logo .lab-i{display:inline-block;width:.14em;height:.66em;margin-right:.1em;background:#c00000}"
+                ".lab-logo:hover{background:rgba(255,255,255,.08)}")
+LAB_LOGO_HTML = (f'<a class="lab-logo" href="{LAB_URL}" target="_blank" rel="noopener" title="IMaC Lab 홈페이지 (새 창)" '
+                 'aria-label="IMaC Lab 홈페이지"><span class="lab-i" aria-hidden="true"></span>MaC Lab</a>')
+
+
 def cmd_publish(a: argparse.Namespace) -> int:
     """Copy the static viewer of an output directory into a web-publishable folder (e.g. for GitHub Pages).
 
@@ -591,8 +602,10 @@ def cmd_publish(a: argparse.Namespace) -> int:
     items = "\n".join(f'<li><a href="{c}/index.html">{c}</a></li>' for c in cases)
     (site / "index.html").write_text(
         "<!doctype html><meta charset='utf-8'><title>ct2skel cases</title>"
-        "<style>body{font-family:system-ui;margin:2rem;background:#14171c;color:#e6e8eb}a{color:#7cc4ff}</style>"
-        f"<h1>ct2skel — CT ↔ SKEL viewer</h1><ul>{items}</ul>"
+        "<style>body{font-family:system-ui;margin:2rem;background:#14171c;color:#e6e8eb}a{color:#7cc4ff}" + LAB_LOGO_CSS + "</style>"
+        f"<header style='display:flex;align-items:center;gap:14px;margin-bottom:1.2rem'>{LAB_LOGO_HTML}"
+        "<span style='opacity:.5'>|</span><strong>ct2skel — CT ↔ SKEL viewer</strong></header>"
+        f"<ul>{items}</ul>"
         "<p>Static build: saved preset poses only (live joint sliders need <code>ct2skel serve</code>).</p>\n", encoding="utf-8")
     (site / ".nojekyll").write_text("")
     _log(f"published {len(files)} files ({total / 1e6:.0f} MB) to {dest}  (site index: {site / 'index.html'})")
