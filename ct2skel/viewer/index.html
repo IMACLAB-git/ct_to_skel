@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CT ↔ SKEL viewer</title>
+<style>
+  :root { --bg:#14161a; --panel:#1e2128; --line:#2c303a; --fg:#e6e6e6; --muted:#9aa0ab; --accent:#4fa3ff; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow:hidden; }
+  #app { display:grid; grid-template-columns: 300px 1fr; grid-template-rows: 48px 1fr; height:100%; }
+  header { grid-column: 1 / 3; display:flex; align-items:center; gap:14px; padding:0 14px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { font-size:15px; margin:0; font-weight:600; }
+  header .case { color:var(--muted); }
+  header .spacer { flex:1; }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .seg button { background:transparent; color:var(--fg); border:0; padding:6px 10px; cursor:pointer; }
+  .seg button.active { background:var(--accent); color:#000; }
+  button.btn { background:#2b3140; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 10px; cursor:pointer; }
+  button.btn:hover { background:#353c4d; }
+  aside { background:var(--panel); border-right:1px solid var(--line); overflow:auto; padding:10px 12px; }
+  main { position:relative; }
+  canvas { display:block; }
+  section { margin-bottom:14px; }
+  section h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:8px 0 6px; }
+  .row { display:flex; align-items:center; gap:8px; margin:4px 0; }
+  .row label { flex:1; }
+  .row input[type=range] { flex:1.4; }
+  .row .val { width:44px; text-align:right; color:var(--muted); font-variant-numeric: tabular-nums; }
+  .tree details { margin:2px 0; }
+  .tree summary { cursor:pointer; user-select:none; }
+  .tree .item { display:flex; align-items:center; gap:6px; padding:1px 0 1px 14px; }
+  .tree .sw { width:10px; height:10px; border-radius:2px; display:inline-block; }
+  .tree .item .err { margin-left:auto; color:var(--muted); font-size:11px; }
+  table.metrics { width:100%; border-collapse:collapse; font-size:12px; }
+  table.metrics td { padding:2px 4px; border-bottom:1px solid var(--line); }
+  table.metrics td:last-child { text-align:right; font-variant-numeric: tabular-nums; }
+  #legend { position:absolute; right:14px; bottom:14px; background:rgba(30,33,40,.9); border:1px solid var(--line); border-radius:6px; padding:8px 10px; display:none; }
+  #legend .bar { width:180px; height:10px; border-radius:3px; background:linear-gradient(90deg,#30123b,#466be3,#27c8d6,#7afa64,#e8da2b,#fb6a16,#a51504); }
+  #legend .lab { display:flex; justify-content:space-between; color:var(--muted); font-size:11px; }
+  #status { position:absolute; left:14px; bottom:14px; color:var(--muted); font-size:12px; }
+  #panel2d { position:absolute; right:14px; top:44px; background:rgba(30,33,40,.92); border:1px solid var(--line); border-radius:6px; padding:6px; }
+  #panel2d canvas { display:block; background:#000; border-radius:3px; max-width:min(42vw, 480px); height:auto; }
+  #panel2d .lab { display:flex; justify-content:space-between; gap:12px; color:var(--muted); font-size:11px; margin-top:4px; }
+  #panel2d i { font-style:normal; }
+  select { background:#2b3140; color:var(--fg); border:1px solid var(--line); border-radius:4px; padding:3px 4px; flex:1.4; }
+  #help { position:absolute; left:14px; top:12px; color:var(--muted); font-size:11px; }
+  kbd { background:#2b3140; border:1px solid var(--line); border-radius:3px; padding:0 4px; }
+  button.btn.sm { padding:3px 8px; font-size:12px; margin-left:4px; }
+  .pose details { margin:3px 0; border:1px solid var(--line); border-radius:6px; padding:2px 6px; }
+  .pose summary { cursor:pointer; font-size:12px; color:var(--fg); }
+  .pose .dof { display:grid; grid-template-columns: 74px 16px 1fr 44px; align-items:center; gap:6px; margin:2px 0; font-size:12px; }
+  .pose .dof.off { opacity:.45; }
+  .pose .dof .side { font-weight:600; color:var(--accent); text-align:center; }
+  .pose .dof .val { text-align:right; color:var(--muted); font-variant-numeric: tabular-nums; }
+  .pose .dof input[type=range] { width:100%; margin:0; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>CT ↔ SKEL</h1><span class="case" id="case"></span>
+    <div class="seg" id="mode">
+      <button data-mode="overlay" class="active">Overlay</button>
+      <button data-mode="side">Side by side</button>
+      <button data-mode="error">Error map</button>
+    </div>
+    <div class="seg" id="contrast">
+      <button data-c="part" class="active">Part colours</button>
+      <button data-c="source">CT vs SKEL</button>
+    </div>
+    <span class="spacer"></span>
+    <button class="btn" id="reset">Reset view</button>
+    <button class="btn" id="shot">Screenshot</button>
+  </header>
+
+  <aside>
+    <section>
+      <h2>Exploded view</h2>
+      <div class="row"><label>Bones</label><input type="range" id="explode" min="0" max="1" step="0.01" value="0"><span class="val" id="explode_v">0.00</span></div>
+      <div class="row"><label>Layers (skin↔bone)</label><input type="range" id="layer" min="0" max="1" step="0.01" value="0"><span class="val" id="layer_v">0.00</span></div>
+      <div class="row"><label>CT ↔ SKEL gap</label><input type="range" id="gap" min="0" max="1" step="0.01" value="0"><span class="val" id="gap_v">0.00</span></div>
+    </section>
+    <section>
+      <h2>Appearance</h2>
+      <div class="row"><label>CT skin opacity</label><input type="range" id="op_ct" min="0" max="1" step="0.01" value="0.35"><span class="val" id="op_ct_v">0.35</span></div>
+      <div class="row"><label>SKEL skin opacity</label><input type="range" id="op_skel" min="0" max="1" step="0.01" value="0.35"><span class="val" id="op_skel_v">0.35</span></div>
+      <div class="row"><label>SKEL wireframe</label><input type="checkbox" id="wire"></div>
+      <div class="row"><label>Axial clip (superior→)</label><input type="range" id="clip" min="0" max="1" step="0.005" value="1"><span class="val" id="clip_v">off</span></div>
+      <div class="row"><label>Show joints</label><input type="checkbox" id="joints" checked></div>
+    </section>
+    <section id="slice_section" hidden>
+      <h2>CT slice</h2>
+      <div class="row"><label>Height (axial)</label><input type="range" id="slice" min="0" max="1" step="1" value="0"><span class="val" id="slice_v">–</span></div>
+      <div class="row"><label>Window</label>
+        <select id="window">
+          <option value="soft">Soft tissue (L40 / W400)</option>
+          <option value="bone">Bone (L400 / W1800)</option>
+          <option value="lung">Lung (L-600 / W1500)</option>
+          <option value="full">Full range</option>
+        </select></div>
+      <div class="row"><label>Plane opacity</label><input type="range" id="slice_op" min="0" max="1" step="0.01" value="0.95"><span class="val" id="slice_op_v">0.95</span></div>
+      <div class="row"><label>Show plane in 3D</label><input type="checkbox" id="slice_show" checked></div>
+      <div class="row"><label>Clip meshes above slice</label><input type="checkbox" id="slice_clip"></div>
+      <div class="row"><label>2D slice panel</label><input type="checkbox" id="slice_panel" checked></div>
+      <div class="row"><label>Contours in panel</label>
+        <select id="contour_set">
+          <option value="all">CT + SKEL</option>
+          <option value="ct">CT only</option>
+          <option value="skel">SKEL only</option>
+          <option value="none">none</option>
+        </select></div>
+    </section>
+    <section id="pose_section" hidden>
+      <h2>Pose (SKEL kinematics)</h2>
+      <div class="row"><label>Saved pose</label><select id="pose_select"></select><button class="btn sm" id="pose_reset" title="back to the CT pose">Reset</button></div>
+      <div class="row" id="pose_blend_row"><label>Blend fitted → target</label><input type="range" id="pose_t" min="0" max="1" step="0.1" value="0"><span class="val" id="pose_t_v">0.0</span></div>
+      <div class="row"><label>Mirror L ↔ R</label><input type="checkbox" id="pose_mirror"></div>
+      <div class="row"><label>Ghost of CT pose</label><input type="checkbox" id="pose_ghost"></div>
+      <div class="row"><label title="scapula elevation / upward rotation follow the arm (scapulohumeral rhythm)">Scapula follows arm</label><input type="checkbox" id="pose_scapula" checked></div>
+      <div id="pose_groups" class="pose"></div>
+      <div class="row" id="pose_actions" hidden><button class="btn sm" id="pose_save">Save pose…</button><button class="btn sm" id="pose_export">Export STL…</button></div>
+      <div id="pose_status" style="color:var(--muted);font-size:11px"></div>
+    </section>
+    <section>
+      <h2>Parts</h2>
+      <div class="row" id="fill_row" hidden><label>Fill outside CT with body model</label><input type="checkbox" id="fill_missing" checked></div>
+      <div class="tree" id="tree"></div>
+    </section>
+    <section>
+      <h2>Fit metrics</h2>
+      <table class="metrics" id="metrics"></table>
+    </section>
+  </aside>
+
+  <main>
+    <div id="help">drag: rotate · right-drag: pan · wheel: zoom · <kbd>E</kbd> explode toggle · <kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd> modes · <kbd>↑</kbd>/<kbd>↓</kbd> CT slice</div>
+    <div id="status">loading…</div>
+    <div id="legend"><div class="bar"></div><div class="lab"><span>0 mm</span><span id="legend_max">20 mm</span></div></div>
+    <div id="panel2d" hidden>
+      <canvas id="slice_canvas" width="360" height="360"></canvas>
+      <div class="lab"><span id="panel_info">axial</span><span><i style="color:#5cc8ff">■</i> CT mesh &nbsp;<i style="color:#ffb454">■</i> SKEL &nbsp;<i style="color:#ff4d4d">●</i> SKEL joint</span></div>
+    </div>
+  </main>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

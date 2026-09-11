@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ct2skel"
+version = "0.1.0"
+description = "Fit the SKEL body/skeleton model to a preoperative CT and export STL parts with a comparison viewer"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy", "scipy", "torch", "pydicom", "SimpleITK", "scikit-image", "trimesh[easy]",
+    "tqdm", "fast-simplification", "nibabel",
+]
+
+[project.optional-dependencies]
+totalseg = ["TotalSegmentator"]
+test = ["pytest"]
+
+[project.scripts]
+ct2skel = "ct2skel.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ct2skel*"]
+
+[tool.setuptools.package-data]
+ct2skel = ["viewer/*.html", "viewer/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
