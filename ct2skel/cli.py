@@ -35,6 +35,7 @@ def cmd_run(a: argparse.Namespace) -> int:
     from .skel_wrapper import find_model_dir, load_skel, bone_part_labels, part_names, split_mesh_by_label
 
     t0 = time.time()
+    run_id = time.strftime("%Y%m%d-%H%M%S")
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     case = a.case or Path(a.input).stem or "case"
@@ -370,6 +371,7 @@ def cmd_run(a: argparse.Namespace) -> int:
             ex.add_mesh(m, f"ct_bone_unlab_{i}", "ct", "bone", f"CT bone (unlabelled{' near ' + part if part else ''})", part=part,
                         color="#d8d0c0", err_ref=skel_bone_mm, hidden=i in arm_pieces)
     ex.extra["estimated_parts"] = est_names
+    ex.extra["run_id"] = run_id
     if ct_cartilage is not None and len(ct_cartilage.faces):
         ex.add_mesh(ct_cartilage, "ct_cartilage", "ct", "bone", "CT costal cartilage", part=None, color="#e6e0d0", hidden=True)
     # whole CT bone surface is always exported (used when no per-part partition exists)
@@ -407,7 +409,7 @@ def cmd_run(a: argparse.Namespace) -> int:
         allowed = ~np.isin(skin_part_labels(model), est_ids) if (est_ids and ct_bone_parts) else None
         cw = ct_skin_corner_weights(ct_skin, fit_res["skin_verts"] * 1000.0, idx, val, allowed=allowed)
         write_poses(out, model, fit_params, poses, ct_skin_corner_weights=cw,
-                    bone_entries=ex.parts, skel_verts_mm=fit_res["skel_verts"] * 1000.0)
+                    bone_entries=ex.parts, skel_verts_mm=fit_res["skel_verts"] * 1000.0, run_id=run_id)
         np.savez_compressed(out / "model_verts.npz", skel_verts_mm=(fit_res["skel_verts"] * 1000.0).astype(np.float32),
                             skin_verts_mm=(fit_res["skin_verts"] * 1000.0).astype(np.float32))
         ex.extra["poses_file"] = "poses.json"

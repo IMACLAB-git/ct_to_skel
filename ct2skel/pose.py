@@ -262,11 +262,13 @@ def build_pose_entry(model, fit: dict, name: str, q_target: np.ndarray, n_steps:
 
 def write_poses(out_dir: str | Path, model, fit: dict, poses: dict[str, np.ndarray],
                 ct_skin_corner_weights: tuple[np.ndarray, np.ndarray] | None = None,
-                bone_entries: list[dict] | None = None, skel_verts_mm: np.ndarray | None = None) -> Path:
+                bone_entries: list[dict] | None = None, skel_verts_mm: np.ndarray | None = None,
+                run_id: str | None = None) -> Path:
     """Write poses.json (+ optional binary CT-skin corner weights) into the output directory."""
     out = Path(out_dir)
     idx, val = skin_weight_table(model)
     data = {
+        "run_id": run_id,                      # must match manifest.run_id: guards against half-rewritten outputs
         "parts": list(SKEL_PARTS),
         "pose_names": list(POSE_NAMES),
         "n_steps": N_STEPS,

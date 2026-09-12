@@ -36,7 +36,7 @@ window.addEventListener('resize', resize); resize();
 // ------------------------------------------------------------------ state
 const state = {
   mode: 'overlay', contrast: 'part', explode: 0, layer: 0, gap: 0,
-  opCT: 0.35, opSKEL: 0.35, wire: false, clip: 1, joints: true,
+  opCT: 0.35, opSKEL: 0.35, wire: false, clip: 1, joints: false,
   slice: 0, window: 'soft', sliceOp: 0.95, sliceShow: true, sliceClip: false, slicePanel: true, contours: 'all',
   pose: null, poseT: 0, fillMissing: true,
 };
@@ -352,6 +352,11 @@ async function loadPoses() {
   try {
     posesData = await (await fetch(manifest.poses_file, { cache: 'no-store' })).json();
   } catch (e) { console.warn('no poses', e); return; }
+  if (posesData.run_id && manifest.run_id && posesData.run_id !== manifest.run_id) {
+    posesData = null;
+    status('output is being rewritten (poses.json and manifest.json come from different runs): reload later');
+    return;
+  }
   posesData.parts.forEach((n, i) => { partIndex[n] = i; });
   if (posesData.ct_skin_weights) {
     const meta = posesData.ct_skin_weights;
