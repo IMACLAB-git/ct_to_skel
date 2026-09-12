@@ -217,8 +217,13 @@ def align_bones(skel_verts: np.ndarray, labels: np.ndarray, part_names: list[str
                 continue
             T, st = icp(src[near], dst, allow_scale=False, reject_mm=(80.0, 8.0), iters=120)
             # the CT may hold only a short stretch of the forearm (field of view), so judge the fit by the
-            # points that found a partner: mean inlier distance and inlier fraction, not the trimmed residual
-            if st.get("final_inlier_frac", 0) < 0.35 or st.get("final_mean_mm", 99) > 8.0 or st.get("residual_mm", 99) > 25.0:
+            # points that found a partner: mean inlier distance and inlier fraction, not the trimmed residual;
+            # a group must also stay near where its (already aligned) parent carried it - a hand or foot that
+            # slid up the shaft onto the forearm / shank bones is wrong even when its residual is small
+            c0 = src.mean(0)
+            st["shift_mm"] = float(np.linalg.norm(apply_T(T, c0[None])[0] - c0))
+            if (st.get("final_inlier_frac", 0) < 0.35 or st.get("final_mean_mm", 99) > 8.0 or st.get("residual_mm", 99) > 25.0
+                    or st["shift_mm"] > 60.0):
                 out.stats.setdefault(lead, {})["unlabeled_icp_rejected"] = st
                 if "axis_prealigned_deg" in out.stats.get(lead, {}):
                     # keep the principal-axis alignment as a weak direction target (source "unlabeled_axis")

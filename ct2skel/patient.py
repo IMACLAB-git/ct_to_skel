@@ -84,19 +84,36 @@ def gate_components(mesh: trimesh.Trimesh, ref_pts: np.ndarray, max_mm: float) -
     return (trimesh.util.concatenate(keep) if len(keep) > 1 else keep[0]), len(comps) - len(keep)
 
 
-def gate_pieces(pieces: list, ref_pts: np.ndarray, max_mm: float) -> tuple[list, list]:
-    """Gate every unlabelled bone piece component-wise; pieces left empty are dropped. Returns (kept, dropped)."""
+def gate_pieces(pieces: list, ref_pts: np.ndarray, max_mm: float, skin_mesh: trimesh.Trimesh | None = None,
+                skin_margin_mm: float = 15.0) -> tuple[list, list]:
+    """Gate every unlabelled bone piece component-wise.  A component is anatomy when it lies within ``max_mm`` of the
+    fitted skeleton AND (if ``skin_mesh`` is given) inside the fitted skin envelope (signed distance <= margin): a
+    forearm the first fit misplaced by a few centimetres is still inside the arm, a phantom between the legs is not.
+    Returns (kept, dropped)."""
+    tree = cKDTree(np.asarray(ref_pts))
     kept, dropped = [], []
     for m in pieces:
-        g, _ = gate_components(m, ref_pts, max_mm)
-        (kept if g is not None and len(g.faces) else dropped).append(g if len(g.faces) else m)
+        comps = m.split(only_watertight=False)
+        keep = []
+        for c in comps:
+            v = np.asarray(c.vertices)[:: max(len(c.vertices) // 2000, 1)]
+            ok = np.median(tree.query(v)[0]) <= max_mm
+            if ok and skin_mesh is not None:
+                sd = trimesh.proximity.signed_distance(skin_mesh, v)       # positive inside for trimesh
+                ok = np.median(sd) >= -skin_margin_mm
+            if ok:
+                keep.append(c)
+        if keep:
+            kept.append(trimesh.util.concatenate(keep) if len(keep) > 1 else keep[0])
+        else:
+            dropped.append(m)
     return kept, dropped
 
 
 # ---------------------------------------------------------------------- patient skin
 def refine_to_surface(V: np.ndarray, F: np.ndarray, ct_pts: np.ndarray, constrain: np.ndarray, max_dist_mm: float = 40.0,
                       iters: int = 8, smooth_iters: int = 20, step: float = 0.8, data_weight: float = 0.6,
-                      ct_normals: np.ndarray | None = None, min_normal_dot: float = 0.5):
+                      ct_normals: np.ndarray | None = None, min_normal_dot: float = 0.0):
     """Move constrained vertices onto the CT surface with a graph-smoothed displacement field (non-rigid ICP in the
     spirit of Amberg et al. 2007): correspondences are the nearest CT surface samples, accepted only when the surface
     normals agree (``min_normal_dot``) and the distance is below a coarse-to-fine schedule (2x ``max_dist_mm`` down to

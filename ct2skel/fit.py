@@ -95,6 +95,13 @@ class Stage:
 
 ALL_POSE_IDX = list(range(3, 46))
 
+# long bones whose ICP orientation only fixes the axis (part -> child joint): femur, tibia, humerus, ulna, radius
+LONG_BONE_CHILD = {SKEL_PARTS.index(a): SKEL_PARTS.index(b) for a, b in (
+    ("femur_r", "tibia_r"), ("tibia_r", "talus_r"), ("femur_l", "tibia_l"), ("tibia_l", "talus_l"),
+    ("humerus_r", "ulna_r"), ("ulna_r", "hand_r"), ("radius_r", "hand_r"),
+    ("humerus_l", "ulna_l"), ("ulna_l", "hand_l"), ("radius_l", "hand_l"))}
+LONG_BONE_MASK = torch.tensor([i in LONG_BONE_CHILD for i in range(24)])
+
 
 def supine_prior_weights(n: int = 46) -> torch.Tensor:
     """Per-DOF weights for the pose prior (deviation from the initial pose).
@@ -458,7 +465,19 @@ class SkelCTFitter:
                 if use_joints and stage.w_joint > 0:
                     losses["joint"] = stage.w_joint * DATA_SCALE * ((out.joints[0] - j_ct).pow(2).sum(-1) * j_w).sum() / j_w.sum()
                 if use_orient and stage.w_orient > 0 and (stage.opt_rot or stage.pose_idx):
-                    losses["orient"] = stage.w_orient * ((out.joints_ori[0] - R_t).pow(2).sum(dim=(1, 2)) * R_w).sum() / R_w.sum()
+                    # long bones are nearly cylindrical: an ICP transform observes their axis, not their twist.
+                    # Their target therefore constrains only the axis direction (joint -> child joint, expressed in
+                    # the part frame); the twist comes from the pose prior and from the extremities' full targets.
+                    R_fit = out.joints_ori[0]
+                    full = (R_fit - R_t).pow(2).sum(dim=(1, 2))
+                    J = out.joints[0].detach()
+                    ax = torch.zeros_like(J)
+                    for pi, ci in LONG_BONE_CHILD.items():
+                        d = J[ci] - J[pi]
+                        ax[pi] = R_fit[pi].detach().transpose(0, 1) @ (d / d.norm().clamp_min(1e-6))
+                    axis = ((R_fit @ ax[:, :, None]) - (R_t @ ax[:, :, None])).squeeze(-1).pow(2).sum(dim=1) * 3.0
+                    per_part = torch.where(LONG_BONE_MASK.to(self.dev), axis, full)
+                    losses["orient"] = stage.w_orient * (per_part * R_w).sum() / R_w.sum()
                 if stage.w_pose_reg > 0 and stage.pose_idx:
                     losses["pose_reg"] = stage.w_pose_reg * (prior_w[3:] * (q[:, 3:] - poses_ref[:, 3:]).pow(2)).sum()
                 if stage.w_betas_reg > 0 and stage.opt_betas:

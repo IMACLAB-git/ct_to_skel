@@ -187,7 +187,8 @@ def cmd_run(a: argparse.Namespace) -> int:
         n_skin0, n_bone0 = len(ct_skin.faces), len(ct_bone.faces)
         ct_skin = gate_mesh_by_distance(ct_skin, ref_skin, a.gate_mm)
         ct_bone = gate_mesh_by_distance(ct_bone, ref_skel, a.gate_mm)
-        ct_unlabeled, dropped = gate_pieces(ct_unlabeled, ref_skel, a.gate_mm)
+        ct_unlabeled, dropped = gate_pieces(ct_unlabeled, ref_skel, a.gate_mm + 45.0,
+                                            skin_mesh=trimesh.Trimesh(ref_skin, model.skin_f.cpu().numpy(), process=False))
         n_isl = 0
         labels_v0 = bone_part_labels(model)
         for p_, m_ in list(ct_bone_parts.items()):            # islands of a label far from ITS OWN bone (segmentation noise)
