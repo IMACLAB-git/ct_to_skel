@@ -71,12 +71,12 @@ class CaseExporter:
 
     def add_mesh(self, mesh: trimesh.Trimesh, pid: str, group: str, kind: str, name: str,
                  part: str | None = None, color: str | None = None, err_ref: np.ndarray | None = None,
-                 hidden: bool = False) -> None:
+                 hidden: bool = False, static: bool = False) -> None:
         if mesh is None or len(mesh.faces) == 0:
             return
         f = self.out / "stl" / f"{pid}.stl"
         mesh.export(f)
-        entry = {"id": pid, "group": group, "kind": kind, "name": name, "part": part, "hidden": hidden,
+        entry = {"id": pid, "group": group, "kind": kind, "name": name, "part": part, "hidden": hidden, "static": static,
                  "file": f"stl/{f.name}",
                  "color": color or (PART_COLORS.get(part, "#cccccc") if kind in ("bone", "bone_tpl") else
                                     (SKIN_COLOR_CT if group == "ct" else SKIN_COLOR_SKEL)),

@@ -312,7 +312,9 @@ function buildFillItems() {
   $('fill_row').hidden = false;
   const cw = posesData ? skelSkinCorners() : null;
   const estIdx = new Set(estNames.map((n) => partIndex[n]).filter((i) => i !== undefined));
-  const src = items.filter((it) => it.group === 'skel' && (it.kind === 'skin' || it.kind === 'bone') && !it.entry.hidden);
+  // with a SKEL-topology patient skin the skin already covers the whole body (parametric where the CT ends)
+  const src = items.filter((it) => it.group === 'skel' && (it.kind === 'skin' || it.kind === 'bone') && !it.entry.hidden
+                                   && !(it.kind === 'skin' && manifest.patient_skin === 'skel_topology'));
   for (const it of src) {
     const pos = it.mesh.geometry.attributes.position.array;
     const nTri = pos.length / 9, keep = [];
@@ -441,6 +443,7 @@ function applyPose() {
   for (const it of items) {
     const e = it.entry;
     if (e.kind === 'bone_all') { it.mesh.visible = false; continue; }
+    if (e.static) { it.mesh.visible = false; continue; }          // raw CT surface: reference in the CT pose only
     if (e.part && partIndex[e.part] !== undefined && (e.kind === 'bone' || e.kind === 'bone_tpl')) {
       const bw = it.cornerW || (boneW && boneW[e.id]);
       if (bw && bw.idx.length === it.mesh.geometry.attributes.position.count * bw.top) { skinCorners(it.mesh, M, bw.idx, bw.w, bw.top); if (it.errMesh) it.errMesh.visible = false; continue; }
@@ -537,6 +540,9 @@ async function initPoseUI() {
   });
   $('pose_ghost').addEventListener('change', (e) => { setGhost(e.target.checked); });
   if ($('pose_scapula')) $('pose_scapula').addEventListener('change', () => requestPose());
+  // ?pose=<name> in live mode: apply the saved pose through the FK server
+  const qp = new URLSearchParams(location.search).get('pose');
+  if (qp) { const p = poseApi.poses.find((x) => x.name === qp); if (p) { sel.value = qp; setQ(p.q.slice()); } }
 }
 
 function refreshSliders() {
@@ -721,6 +727,7 @@ function drawPanel(j, y, lut) {
   if (state.contours !== 'none') {
     for (const it of items) {
       if (!it.visible || it.kind === 'bone_all') continue;
+      if (posed) continue;                                          // the CT slice is in the CT pose: no posed contours
       if (state.contours === 'ct' && it.group !== 'ct') continue;
       if (state.contours === 'skel' && it.group !== 'skel') continue;
       const segs = meshContour(it.mesh.geometry, y);

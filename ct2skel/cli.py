@@ -152,6 +152,7 @@ def cmd_run(a: argparse.Namespace) -> int:
 
     # 5. SKEL fit -------------------------------------------------------------------
     fit_res, metrics, model, model_device = None, {}, None, None
+    patient_skin, patient_W = None, None
     model_dir = find_model_dir(a.skel_dir, gender)
     if a.no_fit:
         _log("--no-fit: skipping SKEL fitting")
@@ -178,6 +179,24 @@ def cmd_run(a: argparse.Namespace) -> int:
         fit_res = fitter.fit(targets)
         refine_info = {}
         ex_seams = {}
+        # anatomical gate: CT structures far from the fitted body model are not the patient (table, calibration
+        # phantom, cables, wires).  Applied to the raw skin, the bone union and the unlabelled pieces; the fit targets
+        # are re-sampled from the gated surfaces.
+        from .patient import gate_mesh_by_distance, gate_pieces, gate_components
+        ref_skin, ref_skel = fit_res["skin_verts"] * 1000.0, fit_res["skel_verts"] * 1000.0
+        n_skin0, n_bone0 = len(ct_skin.faces), len(ct_bone.faces)
+        ct_skin = gate_mesh_by_distance(ct_skin, ref_skin, a.gate_mm)
+        ct_bone = gate_mesh_by_distance(ct_bone, ref_skel, a.gate_mm)
+        ct_unlabeled, dropped = gate_pieces(ct_unlabeled, ref_skel, a.gate_mm)
+        n_isl = 0
+        for p_, m_ in list(ct_bone_parts.items()):            # islands of a label far from its bone (segmentation noise)
+            ct_bone_parts[p_], k_ = gate_components(m_, ref_skel, a.gate_mm)
+            n_isl += k_
+        _log(f"anatomical gate ({a.gate_mm} mm from the fitted body model): skin faces {n_skin0} -> {len(ct_skin.faces)}, "
+             f"bone faces {n_bone0} -> {len(ct_bone.faces)}, unlabelled pieces dropped {len(dropped)}, label islands dropped {n_isl}")
+        skin_pts, _ = sample_surface(ct_skin, 40000)
+        bone_pts, _ = sample_surface(ct_bone, 40000)
+        targets = FitTargets(skin_pts=skin_pts / 1000.0, bone_pts=bone_pts / 1000.0, joints=targets.joints, joint_w=targets.joint_w)
         if ct_bone_parts and not a.no_icp:
             from dataclasses import replace
             from .refine import align_bones, refine_skin
@@ -320,14 +339,16 @@ def cmd_run(a: argparse.Namespace) -> int:
             refine_info["bone_transforms"] = {n: np.round(T, 5).tolist() for n, T in al.transforms.items()}
             refine_info["display"] = "parametric"
             ex_seams = {}
-            if not a.no_skin_refine:
-                from .skel_wrapper import skin_part_labels
-                is_est = np.zeros(len(names), dtype=bool); is_est[est_ids] = True
-                constrain = ((al.joint_weight > 0) & ~is_est)[skin_part_labels(model)]
-                V, st = refine_skin(fit_res["skin_verts"] * 1000.0, model.skin_f.cpu().numpy(), ct_skin, constrain=constrain)
-                fit_res["skin_verts"] = V / 1000.0
-                refine_info["skin_refine"] = st
-                _log(f"skin refinement: {st}")
+        patient_skin, patient_W = None, None
+        if not a.no_skin_refine:
+            # patient skin = subdivided SKEL skin moved onto the CT surface: SKEL topology + SKEL weights, so it poses
+            # exactly like the model; uncovered regions and estimated limbs stay parametric
+            from .patient import build_patient_skin
+            y_lo, y_hi = float(skin_pts[:, 1].min()), float(skin_pts[:, 1].max())
+            patient_skin, patient_W, st = build_patient_skin(model, fit_res["skin_verts"] * 1000.0, ct_skin, est_ids,
+                                                             y_range_mm=(y_lo, y_hi), levels=a.skin_subdiv)
+            refine_info["patient_skin"] = st
+            _log(f"patient skin (SKEL topology, {st['vertices']} vertices): {st}")
         metrics = evaluate(fit_res, targets)
         if refine_info.get("bone_icp") and "joints_mm" in metrics:
             # after ICP the landmark heuristics are no longer the reference: report them as a consistency check only
@@ -346,7 +367,13 @@ def cmd_run(a: argparse.Namespace) -> int:
     # dense surface samples of the fitted SKEL (mm) are the reference for CT error maps
     skel_skin_mm = fit_res["_skel_skin_surface_pts"] * 1000.0 if fit_res else None
     skel_bone_mm = fit_res["_skel_bone_surface_pts"] * 1000.0 if fit_res else None
-    ex.add_mesh(ct_skin, "ct_skin", "ct", "skin", "CT skin", err_ref=skel_skin_mm)
+    if fit_res is not None and patient_skin is not None:
+        ex.add_mesh(patient_skin, "ct_skin", "ct", "skin", "Patient skin (CT-fitted)", err_ref=skel_skin_mm)
+        ex.add_mesh(ct_skin, "ct_surface_raw", "ct", "skin", "CT surface (raw, not posable)", err_ref=skel_skin_mm,
+                    hidden=True, static=True)
+        ex.extra["patient_skin"] = "skel_topology"
+    else:
+        ex.add_mesh(ct_skin, "ct_skin", "ct", "skin", "CT skin", err_ref=skel_skin_mm)
     if ct_bone_parts:
         for p, m in ct_bone_parts.items():
             ex.add_mesh(m, f"ct_bone_{p}", "ct", "bone", f"CT {p}", part=p, err_ref=skel_bone_mm, hidden=p in est_names)
@@ -406,12 +433,22 @@ def cmd_run(a: argparse.Namespace) -> int:
         poses = {n: preset_pose(model, fit_params, n, ct_skin=ct_skin if (est_ids and ct_bone_parts) else None,
                                 ct_bones=ct_bone_parts or None) for n in PRESETS}
         idx, val = skin_weight_table(model)
-        allowed = ~np.isin(skin_part_labels(model), est_ids) if (est_ids and ct_bone_parts) else None
-        cw = ct_skin_corner_weights(ct_skin, fit_res["skin_verts"] * 1000.0, idx, val, allowed=allowed)
+        extra_npz = {}
+        if patient_skin is not None:
+            from .patient import top_k
+            pidx, pval = top_k(patient_W, 4)
+            corners = np.asarray(patient_skin.faces).reshape(-1)
+            cw = (pidx[corners], pval[corners])
+            extra_npz = {"patient_skin_verts_mm": np.asarray(patient_skin.vertices, np.float32),
+                         "patient_skin_faces": np.asarray(patient_skin.faces, np.int32),
+                         "patient_skin_widx": pidx, "patient_skin_wval": pval}
+        else:
+            allowed = ~np.isin(skin_part_labels(model), est_ids) if (est_ids and ct_bone_parts) else None
+            cw = ct_skin_corner_weights(ct_skin, fit_res["skin_verts"] * 1000.0, idx, val, allowed=allowed)
         write_poses(out, model, fit_params, poses, ct_skin_corner_weights=cw,
                     bone_entries=ex.parts, skel_verts_mm=fit_res["skel_verts"] * 1000.0, run_id=run_id)
         np.savez_compressed(out / "model_verts.npz", skel_verts_mm=(fit_res["skel_verts"] * 1000.0).astype(np.float32),
-                            skin_verts_mm=(fit_res["skin_verts"] * 1000.0).astype(np.float32))
+                            skin_verts_mm=(fit_res["skin_verts"] * 1000.0).astype(np.float32), **extra_npz)
         ex.extra["poses_file"] = "poses.json"
         _log(f"poses.json written with presets: {list(PRESETS)}")
     manifest = ex.write(
@@ -500,7 +537,13 @@ def cmd_refresh(a: argparse.Namespace) -> int:
         data["bone_weights"] = write_bone_weights(out, man["parts"], np.load(mv)["skel_verts_mm"], bidx, bval,
                                                   part_labels=bone_part_labels(model))
         ct_entry = next((e for e in man["parts"] if e["id"] == "ct_skin"), None)
-        if ct_entry is not None and (out / ct_entry["file"]).exists():
+        npz = np.load(mv)
+        if "patient_skin_widx" in npz.files:
+            corners = npz["patient_skin_faces"].reshape(-1)
+            cidx, cval = npz["patient_skin_widx"][corners], npz["patient_skin_wval"][corners]
+            (out / "ct_skin_weights.bin").write_bytes(cidx.astype(np.uint8).tobytes() + cval.astype(np.float32).tobytes())
+            data["ct_skin_weights"] = {"file": "ct_skin_weights.bin", "n": int(len(cidx)), "top": int(cidx.shape[1])}
+        elif ct_entry is not None and (out / ct_entry["file"]).exists():
             # CT skin skinning weights follow the current ct_skin mesh (it may have been edited, e.g. arms removed)
             from .pose import ct_skin_corner_weights, skin_weight_table
             sidx, sval = skin_weight_table(model)
@@ -643,6 +686,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--input", "-i", required=True, help="DICOM directory or NIfTI/NRRD/MHA file")
     r.add_argument("--out", "-o", required=True)
     r.add_argument("--case", default=None)
+    r.add_argument("--gate-mm", type=float, default=35.0,
+                   help="anatomical gate: CT skin/bone farther than this from the fitted body model is discarded (table, phantoms, cables)")
+    r.add_argument("--skin-subdiv", type=int, default=2, help="subdivision levels of the SKEL skin for the patient skin (2 = ~110k vertices)")
     r.add_argument("--resample-mm", type=float, default=None,
                    help="resample the CT to this isotropic spacing before processing (e.g. 1.5 for sub-mm whole-body scans)")
     r.add_argument("--gender", choices=["male", "female"], default=None, help="default: from DICOM PatientSex")

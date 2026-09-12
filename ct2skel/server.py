@@ -150,6 +150,17 @@ class PoseEngine:
                     V = V.copy(); V[faces] = Pc
                 else:
                     T = M[SKEL_PARTS.index(e["part"])]; V = V @ T[:3, :3].T + T[:3, 3]
+            elif e.get("static"):
+                continue
+            elif e["kind"] == "skin" and e["group"] == "ct" and mv.exists() and "patient_skin_widx" in np.load(mv).files:
+                npz = np.load(mv)
+                corners = npz["patient_skin_faces"].reshape(-1)
+                if len(corners) == len(m.faces) * 3:
+                    Vc = V[np.asarray(m.faces).reshape(-1)]
+                    Pc = lbs(Vc, np.arange(len(Vc)), npz["patient_skin_widx"][corners], npz["patient_skin_wval"][corners])
+                    V = V.copy(); V[np.asarray(m.faces).reshape(-1)] = Pc
+                else:
+                    continue
             elif e["kind"] == "skin" and e["group"] == "ct" and mv.exists():
                 from .pose import ct_skin_vertex_weights
                 from .skel_wrapper import skin_part_labels

@@ -352,3 +352,25 @@ def test_pose_engine_export_dummy(tmp_path, phantom, monkeypatch):
     assert len(r["M"]) == 24 and len(r["q"]) == 46
     res = eng.export("test_pose", q)
     assert "ct_skin.stl" in res["files"]
+
+
+def test_subdivide_with_weights_and_gate():
+    """Midpoint subdivision keeps weights normalised and the anatomical gate removes distant structures."""
+    from ct2skel.patient import subdivide_with_weights, gate_mesh_by_distance, gate_pieces, top_k
+    m = trimesh.creation.icosphere(subdivisions=2, radius=50.0)
+    W = np.zeros((len(m.vertices), 24), np.float32); W[:, 0] = 0.7; W[:, 1] = 0.3
+    V2, F2, W2 = subdivide_with_weights(m.vertices, m.faces, W, levels=2)
+    assert len(F2) == len(m.faces) * 16 and len(V2) > len(m.vertices)
+    assert np.allclose(W2.sum(1), 1.0, atol=1e-5)
+    idx, val = top_k(W2, 4)
+    assert idx.shape == (len(V2), 4) and np.allclose(val.sum(1), 1.0, atol=1e-5)
+    # a second sphere 300 mm away is not the patient
+    far = trimesh.creation.icosphere(subdivisions=2, radius=20.0); far.apply_translation([300, 0, 0])
+    both = trimesh.util.concatenate([m, far])
+    gated = gate_mesh_by_distance(both, m.vertices, max_mm=35.0)
+    assert gated.bounds[1][0] < 100
+    kept, dropped = gate_pieces([m, far], m.vertices, max_mm=35.0)
+    assert len(kept) == 1 and len(dropped) == 1
+    from ct2skel.patient import gate_components
+    g, n_drop = gate_components(both, m.vertices, max_mm=35.0)
+    assert n_drop == 1 and len(g.faces) == len(m.faces)
