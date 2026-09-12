@@ -189,8 +189,10 @@ def cmd_run(a: argparse.Namespace) -> int:
         ct_bone = gate_mesh_by_distance(ct_bone, ref_skel, a.gate_mm)
         ct_unlabeled, dropped = gate_pieces(ct_unlabeled, ref_skel, a.gate_mm)
         n_isl = 0
-        for p_, m_ in list(ct_bone_parts.items()):            # islands of a label far from its bone (segmentation noise)
-            ct_bone_parts[p_], k_ = gate_components(m_, ref_skel, a.gate_mm)
+        labels_v0 = bone_part_labels(model)
+        for p_, m_ in list(ct_bone_parts.items()):            # islands of a label far from ITS OWN bone (segmentation noise)
+            ref_part = ref_skel[labels_v0 == part_names(model).index(p_)] if p_ in part_names(model) else ref_skel
+            ct_bone_parts[p_], k_ = gate_components(m_, ref_part if len(ref_part) else ref_skel, a.gate_mm)
             n_isl += k_
         _log(f"anatomical gate ({a.gate_mm} mm from the fitted body model): skin faces {n_skin0} -> {len(ct_skin.faces)}, "
              f"bone faces {n_bone0} -> {len(ct_bone.faces)}, unlabelled pieces dropped {len(dropped)}, label islands dropped {n_isl}")
