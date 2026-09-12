@@ -303,8 +303,14 @@ def cmd_run(a: argparse.Namespace) -> int:
                 R_tgt = np.array([al_.transforms.get(n, np.eye(4))[:3, :3] @ R_param[i] for i, n in enumerate(names)])
                 R_w = np.zeros(len(names)); J_w = al_.joint_weight.copy()
                 extremity = {"hand_r", "hand_l", "talus_r", "talus_l", "calcn_r", "calcn_l", "toes_r", "toes_l"}
+                # joints whose position is only defined by an (unobservable) twist of their group about the limb axis:
+                # the radius joint (pronation), the calcaneus/toes joints (foot twist) -> no position target at all
+                twist_only = {"radius_r", "radius_l", "calcn_r", "calcn_l", "toes_r", "toes_l"}
                 for i, n in enumerate(names):
                     src = al_.stats.get(n, {}).get("source")
+                    if n in twist_only:
+                        R_w[i] = 0.0; J_w[i] = 0.0
+                        continue
                     if n in extremity:
                         # hands / feet: the ICP onto unlabelled pieces places them but cannot see their twist and the
                         # SKEL hand/foot is a coarse blob -> soft joint position only, pose from the supine prior
