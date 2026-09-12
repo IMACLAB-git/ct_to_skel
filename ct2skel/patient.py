@@ -95,9 +95,13 @@ def gate_pieces(pieces: list, ref_pts: np.ndarray, max_mm: float) -> tuple[list,
 
 # ---------------------------------------------------------------------- patient skin
 def refine_to_surface(V: np.ndarray, F: np.ndarray, ct_pts: np.ndarray, constrain: np.ndarray, max_dist_mm: float = 40.0,
-                      iters: int = 8, smooth_iters: int = 20, step: float = 0.8, data_weight: float = 0.6):
-    """Move constrained vertices onto the CT surface (nearest CT surface sample) with a graph-smoothed displacement
-    field; unconstrained vertices follow their neighbours harmonically.  KD-tree based (fast on 100k+ vertices)."""
+                      iters: int = 8, smooth_iters: int = 20, step: float = 0.8, data_weight: float = 0.6,
+                      ct_normals: np.ndarray | None = None, min_normal_dot: float = 0.5):
+    """Move constrained vertices onto the CT surface with a graph-smoothed displacement field (non-rigid ICP in the
+    spirit of Amberg et al. 2007): correspondences are the nearest CT surface samples, accepted only when the surface
+    normals agree (``min_normal_dot``) and the distance is below a coarse-to-fine schedule (2x ``max_dist_mm`` down to
+    ``max_dist_mm``).  This keeps a hand lying on the thigh from snapping onto the thigh surface.  Unconstrained
+    vertices follow their neighbours harmonically.  KD-tree based (fast on 100k+ vertices)."""
     from .refine import _adjacency
     V = np.asarray(V, dtype=np.float64).copy()
     n = len(V)
@@ -105,9 +109,14 @@ def refine_to_surface(V: np.ndarray, F: np.ndarray, ct_pts: np.ndarray, constrai
     tree = cKDTree(np.asarray(ct_pts))
     stats = {}
     for it in range(iters):
+        d_max = max_dist_mm * (2.0 - it / max(iters - 1, 1))          # 2x -> 1x max_dist over the iterations
         dist, nn = tree.query(V)
         disp = ct_pts[nn] - V
-        ok = constrain & (dist < max_dist_mm)
+        ok = constrain & (dist < d_max)
+        if ct_normals is not None:
+            vn = trimesh.Trimesh(V, F, process=False).vertex_normals
+            agree = np.einsum("ij,ij->i", vn, ct_normals[nn]) > min_normal_dot
+            ok &= agree
         target = np.where(ok[:, None], disp, 0.0)
         D = target.copy()
         for _ in range(smooth_iters):
@@ -137,7 +146,7 @@ def build_patient_skin(model, skin_verts_mm: np.ndarray, ct_skin: trimesh.Trimes
         constrain &= (V[:, 1] > lo + margin_mm) & (V[:, 1] < hi - margin_mm)
     # dense CT surface samples (vertices are ~3 mm apart on the marching-cubes skin: fine as targets)
     ct_pts = np.asarray(ct_skin.vertices, dtype=np.float64)
-    V2, stats = refine_to_surface(V, F, ct_pts, constrain)
+    V2, stats = refine_to_surface(V, F, ct_pts, constrain, ct_normals=np.asarray(ct_skin.vertex_normals))
     stats["vertices"] = int(len(V2)); stats["levels"] = int(levels)
     mesh = trimesh.Trimesh(V2, F, process=False)
     return mesh, W, stats

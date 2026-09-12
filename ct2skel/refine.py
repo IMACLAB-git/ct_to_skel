@@ -91,7 +91,11 @@ class BoneAlignment:
 
 # parts that are aligned together as one rigid unit when only unlabelled CT bone is available
 _RIGID_GROUPS = {"ulna_r": ("ulna_r", "radius_r"), "ulna_l": ("ulna_l", "radius_l"),
-                 "tibia_r": ("tibia_r",), "tibia_l": ("tibia_l",)}
+                 "tibia_r": ("tibia_r",), "tibia_l": ("tibia_l",),
+                 # extremities: after the forearm / shank, the hand and the foot (talus+calcaneus+toes) are aligned
+                 # onto the same unlabelled pieces -> wrist / ankle pose from the CT
+                 "hand_r": ("hand_r",), "hand_l": ("hand_l",),
+                 "talus_r": ("talus_r", "calcn_r", "toes_r"), "talus_l": ("talus_l", "calcn_l", "toes_l")}
 
 
 def align_bones(skel_verts: np.ndarray, labels: np.ndarray, part_names: list[str], joints: np.ndarray,

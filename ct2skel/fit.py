@@ -150,6 +150,7 @@ class FitConfig:
     scale_range: tuple = (0.8, 1.25)  # bounds of the global scale
     w_scale_reg: float = 1.0         # (scale-1)^2 penalty
     min_support: float = 0.03        # fraction of a part's skeleton vertices inside the CT bbox to count as supported
+    support_margin: float = 0.08     # m; bbox margin for the initial DOF-support test (model not yet placed)
     weak_prior_parts: list | None = None   # part ids whose DOFs get a weak pose prior (well covered by the CT)
     estimated_parts: list | None = None    # part ids treated as unobserved (e.g. arms): DOFs frozen at the init pose, no CT terms
     weak_prior_min_frac: float = 0.6       # ... otherwise: parts with at least this fraction of skeleton vertices inside the CT
@@ -320,12 +321,17 @@ class SkelCTFitter:
         return trans
 
     @torch.no_grad()
-    def _dof_support(self, poses, betas, trans, targets: FitTargets) -> torch.Tensor:
-        """1 for DOFs whose articulated bone has skeleton vertices inside the CT bbox, else 0."""
+    def _dof_support(self, poses, betas, trans, targets: FitTargets, margin: float | None = None,
+                     scale=None) -> torch.Tensor:
+        """1 for DOFs whose articulated bone has skeleton vertices inside the CT bbox, else 0.
+
+        ``margin`` (m) widens the bbox test: before the model is placed, limbs may still stick out of the scan by a
+        few centimetres although the CT contains them; support is re-evaluated after every stage."""
         from .skel_wrapper import bone_part_labels
-        out = self.forward(poses, betas, trans, skelmesh=True)
+        with torch.no_grad():
+            out = self.forward(poses.detach(), betas.detach(), trans.detach(), skelmesh=True, scale=scale)
         labels = torch.as_tensor(bone_part_labels(self.model), device=self.dev)
-        inside = inside_bbox(out.skel_verts[0], self._t(targets.bbox), self.cfg.bbox_margin)
+        inside = inside_bbox(out.skel_verts[0], self._t(targets.bbox), self.cfg.bbox_margin if margin is None else margin)
         support = torch.ones(self.model.num_q_params, device=self.dev)
         self.part_frac = torch.zeros(24, device=self.dev)
         for part in range(24):
@@ -366,7 +372,7 @@ class SkelCTFitter:
 
         supported = torch.ones(self.model.num_q_params, device=self.dev)
         if cfg.freeze_unsupported:
-            supported = self._dof_support(poses, betas, trans, targets)
+            supported = self._dof_support(poses, betas, trans, targets, margin=cfg.support_margin)
             frozen = [SKEL_POSE_NAMES[i] for i in range(self.model.num_q_params) if supported[i] == 0]
             if cfg.verbose and frozen:
                 print(f"[fit] freezing {len(frozen)} pose DOFs without CT support: {frozen}", flush=True)
@@ -387,9 +393,16 @@ class SkelCTFitter:
         scale.requires_grad_(True)
         history = []
         t0 = time.time()
-        for stage in cfg.stages:
+        for k_stage, stage in enumerate(cfg.stages):
             if stage.w_skin == 0 and stage.w_bone == 0 and not use_joints and not use_orient and not (targets.limb_lengths and stage.w_limb > 0):
                 continue                                   # joints-only stage without joint targets
+            if cfg.freeze_unsupported and k_stage > 0:
+                # the model has been placed by now: re-evaluate which bones the scan actually contains
+                new_sup = self._dof_support(poses, betas, trans, targets, margin=cfg.bbox_margin, scale=scale.detach())
+                if cfg.verbose and bool((new_sup != supported).any()):
+                    changed = [SKEL_POSE_NAMES[i] + ("+" if new_sup[i] > supported[i] else "-") for i in range(len(new_sup)) if new_sup[i] != supported[i]]
+                    print(f"[fit] DOF support re-evaluated before '{stage.name}': {changed}", flush=True)
+                supported = new_sup
             pose_mask = torch.zeros(self.model.num_q_params, device=self.dev)
             if stage.opt_rot:
                 pose_mask[:3] = 1
