@@ -43,6 +43,11 @@ def cmd_run(a: argparse.Namespace) -> int:
     vol = load_volume(a.input)
     meta = vol.meta or {}
     _log(f"volume {vol.shape_xyz} spacing {tuple(round(s, 3) for s in vol.spacing)} mm  meta={meta}")
+    if a.resample_mm:
+        from .dicom_io import resample_volume
+        vol = resample_volume(vol, a.resample_mm)
+        meta = vol.meta or {}
+        _log(f"resampled to {a.resample_mm} mm: {vol.shape_xyz}")
     gender = a.gender or {"M": "male", "F": "female"}.get(str(meta.get("patient_sex", "")).upper(), "male")
     _log(f"gender = {gender}")
     if a.save_nifti:
@@ -125,6 +130,8 @@ def cmd_run(a: argparse.Namespace) -> int:
                 comp = lab_u == i
                 mesh = smooth_bone_mesh(comp, vol, close_mm=1.0, smooth_iterations=10, fill_holes=False,
                                         min_component_mm3=300.0, target_faces=40000, mc_step=a.mc_step)
+                from .meshing import drop_small_components
+                mesh = drop_small_components(mesh)          # specks / vessel strings hanging off the piece
                 if len(mesh.faces):
                     ct_unlabeled.append(to_skel_mm(mesh))
             _log(f"unlabelled CT bones kept as separate pieces: {len(ct_unlabeled)} (e.g. forearms without appendicular labels)")
@@ -634,6 +641,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--input", "-i", required=True, help="DICOM directory or NIfTI/NRRD/MHA file")
     r.add_argument("--out", "-o", required=True)
     r.add_argument("--case", default=None)
+    r.add_argument("--resample-mm", type=float, default=None,
+                   help="resample the CT to this isotropic spacing before processing (e.g. 1.5 for sub-mm whole-body scans)")
     r.add_argument("--gender", choices=["male", "female"], default=None, help="default: from DICOM PatientSex")
     r.add_argument("--skel-dir", default=None, help="directory with skel_male.pkl / skel_female.pkl")
     r.add_argument("--labels", default=None, help="TotalSegmentator output directory (per-structure NIfTIs)")

@@ -12,7 +12,7 @@ import trimesh
 from scipy import ndimage as ndi
 
 from .dicom_io import Volume
-from .meshing import mask_to_mesh
+from .meshing import mask_to_mesh, taubin_smooth
 from .segment import _ball, radius_mm_to_vox, remove_small_components
 
 
@@ -47,7 +47,7 @@ def smooth_bone_mesh(mask: np.ndarray, vol: Volume, close_mm: float = 2.5, smoot
     if len(mesh.faces) == 0:
         return mesh
     # Taubin keeps the volume while removing voxel ripples; more passes than for the skin
-    trimesh.smoothing.filter_taubin(mesh, lamb=0.5, nu=-0.53, iterations=smooth_iterations)
+    taubin_smooth(mesh, iterations=smooth_iterations)
     if target_faces is not None and len(mesh.faces) > target_faces:
         from .meshing import decimate
         mesh = decimate(mesh, target_faces)

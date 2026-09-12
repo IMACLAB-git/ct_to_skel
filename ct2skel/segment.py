@@ -202,6 +202,7 @@ def claim_unlabeled_bone(part_masks: dict[str, np.ndarray], bone_hu_mask: np.nda
     # large unlabelled pieces are whole bones the labels do not cover (forearms, lower legs ...):
     # keep them separate instead of gluing them onto a neighbouring labelled bone
     big = np.zeros_like(unl)
+    out = {k: v.copy() for k, v in part_masks.items()}
     lab, num = ndi.label(unl)
     if num:
         sizes = ndi.sum(unl, lab, index=np.arange(1, num + 1)) * vol.voxel_volume_mm3()
@@ -209,9 +210,31 @@ def claim_unlabeled_bone(part_masks: dict[str, np.ndarray], bone_hu_mask: np.nda
         if len(big_ids):
             big = np.isin(lab, big_ids)
             unl &= ~big
+            # a big piece that lies inside the axial extent of one labelled long bone and touches it is a gap in
+            # that label (segmentation dropped a stretch of the shaft): give it back to the bone instead of keeping
+            # a bare cortex tube next to it
+            r_vox = radius_mm_to_vox(vol, radius_mm)
+            struct = _ball(r_vox)
+            margin = int(np.ceil(15.0 / vol.spacing[2]))
+            pad = [int(np.ceil(r)) + 1 for r in r_vox]
+            for cid in big_ids:
+                idx = np.where(lab == cid)
+                z0, z1 = int(idx[0].min()), int(idx[0].max())
+                sl = tuple(slice(max(int(idx[a].min()) - pad[a], 0), min(int(idx[a].max()) + pad[a] + 1, lab.shape[a])) for a in range(3))
+                comp = lab[sl] == cid
+                touch = ndi.binary_dilation(comp, structure=struct)
+                owners = []
+                for name, m in part_masks.items():
+                    if not (touch & m[sl]).any():
+                        continue
+                    mz = np.where(m.any(axis=(1, 2)))[0]
+                    if len(mz) and mz.min() + margin <= z0 and z1 <= mz.max() - margin:
+                        owners.append(name)
+                if len(owners) == 1:
+                    out[owners[0]][sl] |= comp
+                    big[sl] &= ~comp
     if not unl.any():
-        return part_masks, big
-    out = {k: v.copy() for k, v in part_masks.items()}
+        return out, big
     best = np.full(bone_hu_mask.shape, np.inf, dtype=np.float32)
     owner = np.full(bone_hu_mask.shape, -1, dtype=np.int16)
     names = list(part_masks)
@@ -235,3 +258,23 @@ def claim_unlabeled_bone(part_masks: dict[str, np.ndarray], bone_hu_mask: np.nda
         if add.any():
             out[name] |= add
     return out, big
+
+
+def trim_thin_structures(mask: np.ndarray, vol: Volume, min_thickness_mm: float = 4.0, core_min_mm3: float = 2000.0,
+                         regrow_mm: float = 3.0) -> np.ndarray:
+    """Remove thin appendages (wires, tape, contrast-filled vessels) from a bone-piece mask.
+
+    Voxels thinner than ``min_thickness_mm`` are eroded away (binary opening); only thick cores of at least
+    ``core_min_mm3`` survive, and the original mask is then re-grown ``regrow_mm`` around those cores so that thin
+    cortex next to thick bone is kept while a long thin appendage keeps only a short stub."""
+    r_open = radius_mm_to_vox(vol, min_thickness_mm / 2.0)
+    opened = ndi.binary_opening(mask, structure=_ball(r_open))
+    lab, num = ndi.label(opened)
+    if not num:
+        return np.zeros_like(mask)
+    sizes = ndi.sum(opened, lab, index=np.arange(1, num + 1)) * vol.voxel_volume_mm3()
+    core = np.isin(lab, np.where(sizes >= core_min_mm3)[0] + 1)
+    if not core.any():
+        return np.zeros_like(mask)
+    grown = ndi.binary_dilation(core, structure=_ball(radius_mm_to_vox(vol, regrow_mm)))
+    return mask & grown

@@ -48,9 +48,33 @@ def mask_to_mesh(mask: np.ndarray, vol: Volume, step: int = 1, smooth_iterations
         parts = mesh.split(only_watertight=False)
         mesh = max(parts, key=lambda m: m.area)
     if smooth_iterations > 0:
-        trimesh.smoothing.filter_taubin(mesh, lamb=0.5, nu=-0.53, iterations=smooth_iterations)
+        taubin_smooth(mesh, iterations=smooth_iterations)
     if target_faces is not None and len(mesh.faces) > target_faces:
         mesh = decimate(mesh, target_faces)
+    return mesh
+
+
+def taubin_smooth(mesh: trimesh.Trimesh, iterations: int = 10, lamb: float = 0.5, nu: float = -0.53) -> trimesh.Trimesh:
+    """Taubin smoothing with a uniform (1/degree) Laplacian, in place.
+
+    The weighted Laplacian of trimesh's own Taubin filter blows up on the non-manifold edges that marching cubes
+    leaves on thin CT bone (vertices thrown tens of centimetres away -> thorn-like slivers); the uniform operator is
+    bounded (every step moves a vertex at most to the centroid of its neighbours)."""
+    import scipy.sparse as sp
+    if iterations <= 0 or len(mesh.faces) == 0:
+        return mesh
+    V = np.asarray(mesh.vertices, dtype=np.float64).copy()
+    E = mesh.edges_unique
+    n = len(V)
+    A = sp.coo_matrix((np.ones(2 * len(E)), (np.r_[E[:, 0], E[:, 1]], np.r_[E[:, 1], E[:, 0]])), shape=(n, n)).tocsr()
+    deg = np.asarray(A.sum(axis=1)).ravel()
+    Dinv = sp.diags(np.where(deg > 0, 1.0 / np.maximum(deg, 1.0), 0.0))
+    for _ in range(iterations):
+        for k in (lamb, nu):
+            L = Dinv @ (A @ V) - V
+            L[deg == 0] = 0.0
+            V += k * L
+    mesh.vertices = V
     return mesh
 
 
@@ -65,7 +89,27 @@ def decimate(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
     v, f = fast_simplification.simplify(np.asarray(mesh.vertices, dtype=np.float32),
                                         np.asarray(mesh.faces, dtype=np.int32),
                                         target_reduction=float(ratio))
-    return trimesh.Trimesh(vertices=v, faces=f, process=True)
+    return remove_sliver_faces(trimesh.Trimesh(vertices=v, faces=f, process=True))
+
+
+def remove_sliver_faces(mesh: trimesh.Trimesh, factor: float = 20.0, min_mm: float = 10.0, max_height_frac: float = 0.02) -> trimesh.Trimesh:
+    """Drop faces with an edge longer than max(``min_mm``, ``factor`` x median edge length).
+
+    Quadric decimation occasionally collapses vertices into long sliver triangles that stick out of the surface
+    like thorns (up to tens of centimetres on CT bone meshes); a CT-resolution mesh never has such edges legitimately.
+    """
+    if len(mesh.faces) == 0:
+        return mesh
+    tri = mesh.triangles
+    e = np.linalg.norm(tri - np.roll(tri, 1, axis=1), axis=2).max(axis=1)
+    thr = max(min_mm, factor * float(np.median(e)))
+    height = 2.0 * mesh.area_faces / np.maximum(e, 1e-9)          # triangle height over its longest edge
+    bad = ((e > thr) & (height < max_height_frac * e)) | (e > 4.0 * thr)   # long *and* needle-thin, or absurdly long
+    if not bad.any():
+        return mesh
+    out = trimesh.Trimesh(vertices=mesh.vertices, faces=mesh.faces[~bad], process=True)
+    out.remove_unreferenced_vertices()
+    return out
 
 
 def sample_surface(mesh: trimesh.Trimesh, n: int, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
@@ -131,3 +175,15 @@ def remove_vertices(mesh: trimesh.Trimesh, drop: np.ndarray, min_component_frac:
     if big and len(big) < len(comps):
         out = trimesh.util.concatenate(big) if len(big) > 1 else big[0]
     return out
+
+
+def drop_small_components(mesh: trimesh.Trimesh, min_area_mm2: float = 400.0, min_extent_mm: float = 15.0) -> trimesh.Trimesh:
+    """Keep only mesh components that are both large (surface area) and extended (bounding box diagonal):
+    removes calcification specks and thin vessel/wire fragments that survive as separate shells."""
+    if not len(mesh.faces):
+        return mesh
+    comps = mesh.split(only_watertight=False)
+    keep = [c for c in comps if c.area >= min_area_mm2 and np.linalg.norm(c.bounds[1] - c.bounds[0]) >= min_extent_mm]
+    if not keep:
+        return trimesh.Trimesh()
+    return trimesh.util.concatenate(keep) if len(keep) > 1 else keep[0]

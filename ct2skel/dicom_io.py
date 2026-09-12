@@ -181,6 +181,15 @@ def _load_dicom_dir(d: Path) -> Volume:
     return Volume.from_sitk(img, meta=meta)
 
 
+def resample_volume(vol: Volume, spacing_mm: float | tuple, interpolator=sitk.sitkLinear) -> Volume:
+    """Resample the volume to a new (isotropic or per-axis) spacing in mm (same origin / direction)."""
+    sp = (float(spacing_mm),) * 3 if np.isscalar(spacing_mm) else tuple(float(v) for v in spacing_mm)
+    img = vol.to_sitk()
+    size = [max(1, int(round(n * s / t))) for n, s, t in zip(img.GetSize(), img.GetSpacing(), sp)]
+    out = sitk.Resample(img, size, sitk.Transform(), interpolator, img.GetOrigin(), sp, img.GetDirection(), -1024.0, sitk.sitkFloat32)
+    return Volume.from_sitk(out, meta={**(vol.meta or {}), "resampled_from_mm": [round(float(v), 4) for v in vol.spacing]})
+
+
 def save_volume(vol: Volume, path: str | os.PathLike, array: np.ndarray | None = None) -> None:
     """Save the volume (or an alternative array on the same grid) to NIfTI/NRRD/MHA."""
     sitk.WriteImage(vol.to_sitk(array), str(path))
