@@ -71,6 +71,13 @@ PRESETS = {
 }
 
 
+def all_pose_limits() -> dict:
+    """SKEL pose limits plus the hip limits ct2skel adds (SKEL leaves the hip unlimited)."""
+    from skel.kin_skel import pose_limits
+    from .fit import EXTRA_LIMITS
+    return {**pose_limits, **EXTRA_LIMITS}
+
+
 def apply_pose_spec(q_fit: np.ndarray, spec: dict[str, float], absolute: bool = True) -> np.ndarray:
     """Return a pose vector with the DOFs in ``spec`` (radians) set (absolute) or added (relative)."""
     q = np.asarray(q_fit, dtype=np.float64).copy()

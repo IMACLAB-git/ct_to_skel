@@ -29,7 +29,8 @@ _DEFAULT_RANGES = {
 
 def _limits_deg(names):
     try:
-        from skel.kin_skel import pose_limits
+        from .pose import all_pose_limits
+        pose_limits = all_pose_limits()
     except Exception:
         pose_limits = {}
     out = {}

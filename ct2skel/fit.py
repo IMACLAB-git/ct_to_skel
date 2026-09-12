@@ -96,12 +96,21 @@ class Stage:
 
 ALL_POSE_IDX = list(range(3, 46))
 
-# long bones whose ICP orientation only fixes the axis (part -> child joint): femur, tibia, humerus, ulna, radius
+# parts whose ICP orientation may only fix an axis (part joint -> reference joint) when the multi-start ICP could not
+# discriminate the twist: long bones (to the child joint) and the extremities (foot: ankle -> toes; hand: the forearm
+# axis, i.e. from the elbow joint to the wrist, expressed in the hand frame)
 LONG_BONE_CHILD = {SKEL_PARTS.index(a): SKEL_PARTS.index(b) for a, b in (
     ("femur_r", "tibia_r"), ("tibia_r", "talus_r"), ("femur_l", "tibia_l"), ("tibia_l", "talus_l"),
     ("humerus_r", "ulna_r"), ("ulna_r", "hand_r"), ("radius_r", "hand_r"),
-    ("humerus_l", "ulna_l"), ("ulna_l", "hand_l"), ("radius_l", "hand_l"))}
-LONG_BONE_MASK = torch.tensor([i in LONG_BONE_CHILD for i in range(24)])
+    ("humerus_l", "ulna_l"), ("ulna_l", "hand_l"), ("radius_l", "hand_l"),
+    ("talus_r", "toes_r"), ("calcn_r", "toes_r"), ("talus_l", "toes_l"), ("calcn_l", "toes_l"))}
+AXIS_FROM_PARENT = {SKEL_PARTS.index("hand_r"): SKEL_PARTS.index("ulna_r"), SKEL_PARTS.index("hand_l"): SKEL_PARTS.index("ulna_l")}
+LONG_BONE_MASK = torch.tensor([i in LONG_BONE_CHILD or i in AXIS_FROM_PARENT for i in range(24)])
+# DOFs that are pure twists of an axis-only part: they must keep the supine prior (no data constrains them)
+TWIST_DOF_PART = {"hip_rotation_r": "femur_r", "hip_rotation_l": "femur_l", "pro_sup_r": "radius_r", "pro_sup_l": "radius_l"}
+# SKEL has no limits for the hip: without them an unobserved twist can run away (seen: hip rotation -168 deg)
+EXTRA_LIMITS = {"hip_flexion_r": (-0.5, 2.1), "hip_flexion_l": (-0.5, 2.1), "hip_adduction_r": (-0.8, 0.8),
+                "hip_adduction_l": (-0.8, 0.8), "hip_rotation_r": (-0.8, 0.8), "hip_rotation_l": (-0.8, 0.8)}
 
 
 def supine_prior_weights(n: int = 46) -> torch.Tensor:
@@ -270,7 +279,7 @@ class SkelCTFitter:
         self.part_support = torch.ones(24, dtype=torch.bool, device=self.dev)
         self.part_estimated = torch.zeros(24, dtype=torch.bool, device=self.dev)
         self._betas_reg_w = torch.as_tensor(list(self.cfg.betas_reg_w) + [1.0] * 20, dtype=torch.float32, device=self.dev)
-        self._limit_table = [(SKEL_POSE_NAMES.index(n), min(lo, hi), max(lo, hi)) for n, (lo, hi) in SKEL_POSE_LIMITS.items()
+        self._limit_table = [(SKEL_POSE_NAMES.index(n), min(lo, hi), max(lo, hi)) for n, (lo, hi) in {**SKEL_POSE_LIMITS, **EXTRA_LIMITS}.items()
                              if n in SKEL_POSE_NAMES]
         self._limit_table = [(i, lo, hi) for i, lo, hi in self._limit_table]
 
@@ -400,6 +409,11 @@ class SkelCTFitter:
         else:
             weak = supported > 0
         prior_w = torch.where(weak, torch.ones_like(prior_w), prior_w)
+        base_prior = supine_prior_weights(self.model.num_q_params).to(self.dev)
+        for i, name in enumerate(SKEL_POSE_NAMES):
+            part = TWIST_DOF_PART.get(name)
+            if part is not None and bool(axis_only_mask[SKEL_PARTS.index(part)]):
+                prior_w[i] = torch.maximum(base_prior[i], torch.tensor(100.0, device=self.dev))
         poses.requires_grad_(True)
         betas.requires_grad_(True)
         trans.requires_grad_(True)
@@ -480,6 +494,9 @@ class SkelCTFitter:
                     ax = torch.zeros_like(J)
                     for pi, ci in LONG_BONE_CHILD.items():
                         d = J[ci] - J[pi]
+                        ax[pi] = R_fit[pi].detach().transpose(0, 1) @ (d / d.norm().clamp_min(1e-6))
+                    for pi, par in AXIS_FROM_PARENT.items():
+                        d = J[pi] - J[par]
                         ax[pi] = R_fit[pi].detach().transpose(0, 1) @ (d / d.norm().clamp_min(1e-6))
                     axis = ((R_fit @ ax[:, :, None]) - (R_t @ ax[:, :, None])).squeeze(-1).pow(2).sum(dim=1) * 3.0
                     per_part = torch.where(axis_only_mask, axis, full)
