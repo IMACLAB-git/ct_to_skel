@@ -110,7 +110,7 @@ LONG_BONE_MASK = torch.tensor([i in LONG_BONE_CHILD or i in AXIS_FROM_PARENT for
 TWIST_DOF_PART = {"hip_rotation_r": "femur_r", "hip_rotation_l": "femur_l", "pro_sup_r": "radius_r", "pro_sup_l": "radius_l"}
 # SKEL has no limits for the hip: without them an unobserved twist can run away (seen: hip rotation -168 deg)
 EXTRA_LIMITS = {"hip_flexion_r": (-0.5, 2.1), "hip_flexion_l": (-0.5, 2.1), "hip_adduction_r": (-0.8, 0.8),
-                "hip_adduction_l": (-0.8, 0.8), "hip_rotation_r": (-0.8, 0.8), "hip_rotation_l": (-0.8, 0.8)}
+                "hip_adduction_l": (-0.8, 0.8), "hip_rotation_r": (-1.05, 1.05), "hip_rotation_l": (-1.05, 1.05)}
 
 
 def supine_prior_weights(n: int = 46) -> torch.Tensor:

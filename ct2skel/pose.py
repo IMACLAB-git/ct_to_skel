@@ -59,13 +59,19 @@ def _deg(**kw):
 _ARM_NEUTRAL = {k: 0.0 for side in "rl" for k in (f"shoulder_{side}_y", f"shoulder_{side}_z", f"elbow_flexion_{side}",
                                                    f"pro_sup_{side}", f"wrist_flexion_{side}", f"wrist_deviation_{side}")}
 
+# leg presets bring the hips to neutral rotation / adduction (a supine patient's legs often lie splayed outward in
+# the CT; a seated or standing pose has the knees pointing forward)
+_LEG_NEUTRAL = {k: 0.0 for side in "rl" for k in (f"hip_rotation_{side}", f"hip_adduction_{side}")}
+
 PRESETS = {
     "arms_down": _deg(shoulder_r_x=90, shoulder_l_x=-90, **_ARM_NEUTRAL),
     "arms_up": _deg(shoulder_r_x=-90, shoulder_l_x=90, **_ARM_NEUTRAL),
     "right_knee_90": _deg(knee_angle_r=90),
     "left_knee_90": _deg(knee_angle_l=90),
-    "hips_45": _deg(hip_flexion_r=45, hip_flexion_l=45),
-    "sitting": _deg(hip_flexion_r=90, hip_flexion_l=90, knee_angle_r=90, knee_angle_l=90),
+    "hips_45": _deg(hip_flexion_r=45, hip_flexion_l=45, **_LEG_NEUTRAL),
+    "sitting": _deg(hip_flexion_r=90, hip_flexion_l=90, knee_angle_r=90, knee_angle_l=90, **_LEG_NEUTRAL),
+    "standing": _deg(hip_flexion_r=0, hip_flexion_l=0, knee_angle_r=0, knee_angle_l=0, ankle_angle_r=0, ankle_angle_l=0,
+                     shoulder_r_x=90, shoulder_l_x=-90, **_ARM_NEUTRAL, **_LEG_NEUTRAL),
     "trunk_flexion_20": _deg(lumbar_extension=-20),
     "head_turn_30": _deg(head_twist=30),
 }
