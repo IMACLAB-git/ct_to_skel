@@ -302,8 +302,15 @@ def cmd_run(a: argparse.Namespace) -> int:
                 R_param = fit_res["joints_ori"]
                 R_tgt = np.array([al_.transforms.get(n, np.eye(4))[:3, :3] @ R_param[i] for i, n in enumerate(names)])
                 R_w = np.zeros(len(names)); J_w = al_.joint_weight.copy()
+                extremity = {"hand_r", "hand_l", "talus_r", "talus_l", "calcn_r", "calcn_l", "toes_r", "toes_l"}
                 for i, n in enumerate(names):
                     src = al_.stats.get(n, {}).get("source")
+                    if n in extremity:
+                        # hands / feet: the ICP onto unlabelled pieces places them but cannot see their twist and the
+                        # SKEL hand/foot is a coarse blob -> soft joint position only, pose from the supine prior
+                        R_w[i] = 0.0
+                        J_w[i] = min(J_w[i], 0.5)
+                        continue
                     if al_.joint_weight[i] >= 1.0:
                         R_w[i] = 1.0 if n in well else (0.5 if src == "unlabeled" else 0.0)
                     elif 0 < al_.joint_weight[i] < 1:

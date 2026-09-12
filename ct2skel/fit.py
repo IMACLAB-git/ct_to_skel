@@ -409,11 +409,11 @@ class SkelCTFitter:
         else:
             weak = supported > 0
         prior_w = torch.where(weak, torch.ones_like(prior_w), prior_w)
-        base_prior = supine_prior_weights(self.model.num_q_params).to(self.dev)
+        # limb twist (hip rotation, forearm pronation) is never observed by the CT-bone ICP on a supine patient:
+        # keep the supine prior on those DOFs regardless of coverage
         for i, name in enumerate(SKEL_POSE_NAMES):
-            part = TWIST_DOF_PART.get(name)
-            if part is not None and bool(axis_only_mask[SKEL_PARTS.index(part)]):
-                prior_w[i] = torch.maximum(base_prior[i], torch.tensor(100.0, device=self.dev))
+            if name in TWIST_DOF_PART:
+                prior_w[i] = torch.tensor(1000.0, device=self.dev)
         poses.requires_grad_(True)
         betas.requires_grad_(True)
         trans.requires_grad_(True)
