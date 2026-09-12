@@ -374,3 +374,14 @@ def test_subdivide_with_weights_and_gate():
     from ct2skel.patient import gate_components
     g, n_drop = gate_components(both, m.vertices, max_mm=35.0)
     assert n_drop == 1 and len(g.faces) == len(m.faces)
+
+
+def test_part_vertex_mask_chain():
+    """Unlabelled pieces are classified per vertex within their limb chain (foot bones follow the ankle)."""
+    from ct2skel.pose import part_vertex_mask
+    labels = np.array([SKEL_PARTS.index(n) for n in ("tibia_r", "talus_r", "toes_r", "femur_l", "hand_r", "pelvis")])
+    single = part_vertex_mask(labels, "tibia_r")
+    chain = part_vertex_mask(labels, "tibia_r", chain=True)
+    assert single.tolist() == [True, False, False, False, False, False]
+    assert chain.tolist() == [True, True, True, False, False, False]
+    assert part_vertex_mask(labels, "pelvis", chain=True).tolist() == [False] * 5 + [True]

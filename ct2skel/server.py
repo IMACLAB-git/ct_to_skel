@@ -144,7 +144,8 @@ class PoseEngine:
                     from .pose import bone_corner_weights, part_vertex_mask
                     from .skel_wrapper import bone_part_labels
                     ci, cv = bone_corner_weights(m, np.load(mv)["skel_verts_mm"], bidx, bval,
-                                                 allowed=part_vertex_mask(bone_part_labels(self.model), e["part"]))
+                                                 allowed=part_vertex_mask(bone_part_labels(self.model), e["part"],
+                                                                          chain=e["id"].startswith("ct_bone_unlab_")))
                     faces = np.asarray(m.faces).reshape(-1)
                     Vc = V[faces]                                # per-corner skinning (matches the viewer)
                     Pc = lbs(Vc, np.arange(len(Vc)), ci, cv)

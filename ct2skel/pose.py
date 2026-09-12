@@ -327,11 +327,23 @@ def bone_corner_weights(mesh, skel_verts_mm: np.ndarray, idx: np.ndarray, val: n
     return idx[nn][faces], val[nn][faces]
 
 
-def part_vertex_mask(part_labels: np.ndarray | None, part: str) -> np.ndarray | None:
-    """Bool mask of the SKEL skeleton vertices that belong to ``part`` (None if labels are unavailable)."""
+# limb chains: an unlabelled CT bone piece (e.g. tibia+fibula+foot, or forearm+hand) may span several SKEL parts of
+# one limb; its vertices are then classified per vertex among the chain's parts so that the foot follows the ankle
+LIMB_CHAINS = [("femur_r", "tibia_r", "talus_r", "calcn_r", "toes_r"), ("femur_l", "tibia_l", "talus_l", "calcn_l", "toes_l"),
+               ("humerus_r", "ulna_r", "radius_r", "hand_r"), ("humerus_l", "ulna_l", "radius_l", "hand_l")]
+
+
+def part_vertex_mask(part_labels: np.ndarray | None, part: str, chain: bool = False) -> np.ndarray | None:
+    """Bool mask of the SKEL skeleton vertices that belong to ``part`` (None if labels are unavailable).
+    With ``chain=True`` the whole limb chain containing ``part`` is allowed (per-vertex classification of a piece)."""
     if part_labels is None or part not in SKEL_PARTS:
         return None
-    return np.asarray(part_labels) == SKEL_PARTS.index(part)
+    lab = np.asarray(part_labels)
+    if chain:
+        for c in LIMB_CHAINS:
+            if part in c:
+                return np.isin(lab, [SKEL_PARTS.index(n) for n in c])
+    return lab == SKEL_PARTS.index(part)
 
 
 def write_bone_weights(out_dir, entries: list[dict], skel_verts_mm: np.ndarray, idx: np.ndarray, val: np.ndarray,
@@ -345,7 +357,8 @@ def write_bone_weights(out_dir, entries: list[dict], skel_verts_mm: np.ndarray, 
         if e["kind"] not in ("bone", "bone_tpl") or not e.get("part"):
             continue
         m = trimesh.load(out / e["file"])
-        ci, cv = bone_corner_weights(m, skel_verts_mm, idx, val, allowed=part_vertex_mask(part_labels, e["part"]))
+        ci, cv = bone_corner_weights(m, skel_verts_mm, idx, val,
+                                     allowed=part_vertex_mask(part_labels, e["part"], chain=e["id"].startswith("ct_bone_unlab_")))
         n = len(ci)
         parts[e["id"]] = {"offset": offset, "n": n}
         chunks.append(ci.astype(np.uint8).tobytes() + cv.astype(np.float32).tobytes())
