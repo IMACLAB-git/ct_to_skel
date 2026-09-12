@@ -257,6 +257,8 @@ def cmd_run(a: argparse.Namespace) -> int:
             al = align_bones(fit_res["skel_verts"] * 1000.0, labels_v, names, fit_res["joints"] * 1000.0,
                              icp_parts, bbox=bbox_mm, unlabeled=icp_unlab)
             aligned = [n for n, w in zip(names, al.joint_weight) if w >= 1.0]
+            tw = {n: al.stats[n].get("twist_margin") for n in aligned if "twist_margin" in al.stats.get(n, {})}
+            _log("twist discrimination (multi-start ICP margin; < 0.15 = axis only): " + ", ".join(f"{n} {v:.2f}" for n, v in tw.items()))
             _log(f"bone ICP pass 1: {len(aligned)} parts aligned; residuals (mm): "
                  + ", ".join(f"{n} {al.stats[n].get('residual_mm', float('nan')):.1f}" for n in aligned)
                  + f"; soft child-joint targets: {[n for n, w in zip(names, al.joint_weight) if 0 < w < 1]}")
@@ -311,8 +313,10 @@ def cmd_run(a: argparse.Namespace) -> int:
                         par = al_.stats.get(n, {}).get("follows")
                         if par not in well and al_.stats.get(par, {}).get("source") not in ("unlabeled", "unlabeled_axis"):
                             J_w[i] = 0.0
+                axis_only = np.array([al_.stats.get(n, {}).get("twist_margin", 1.0) < 0.15 for n in names])
                 return FitTargets(skin_pts=targets.skin_pts, bone_pts=targets.bone_pts, joints=al_.joints / 1000.0,
-                                  joint_w=J_w, bbox=targets.bbox, joint_rot=R_tgt, joint_rot_w=R_w, limb_lengths=limb_targets)
+                                  joint_w=J_w, bbox=targets.bbox, joint_rot=R_tgt, joint_rot_w=R_w, limb_lengths=limb_targets,
+                                  joint_rot_axis_only=axis_only)
 
             strong = [replace(st, w_joint=max(st.w_joint, 50.0) if st.w_joint > 0 else 0.0) for st in cfg.stages]
             weak_parts = [names.index(n) for n in well] + [names.index(n) for n in names

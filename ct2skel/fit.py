@@ -63,6 +63,7 @@ class FitTargets:
     joint_rot_w: np.ndarray | None = None         # (24,)
     bbox: np.ndarray | None = None                # (2, 3) m, CT coverage in SKEL frame
     limb_lengths: dict | None = None              # {(part_a, part_b): joint-to-joint length in m} anthropometric targets
+    joint_rot_axis_only: np.ndarray | None = None  # (24,) bool: constrain only the bone axis (twist not observed by the ICP)
 
     def __post_init__(self):
         if self.bbox is None:
@@ -376,6 +377,11 @@ class SkelCTFitter:
         R_t = self._t(targets.joint_rot) if targets.joint_rot is not None else None
         R_w = self._t(targets.joint_rot_w) if targets.joint_rot_w is not None else None
         use_orient = R_t is not None and R_w is not None and float(R_w.sum()) > 0
+        # long bones whose ICP could not discriminate the twist (multi-start margin small) constrain only their axis
+        if targets.joint_rot_axis_only is not None:
+            axis_only_mask = torch.as_tensor(np.asarray(targets.joint_rot_axis_only, dtype=bool), device=self.dev) & LONG_BONE_MASK.to(self.dev)
+        else:
+            axis_only_mask = torch.zeros(24, dtype=torch.bool, device=self.dev)
 
         supported = torch.ones(self.model.num_q_params, device=self.dev)
         if cfg.freeze_unsupported:
@@ -476,7 +482,7 @@ class SkelCTFitter:
                         d = J[ci] - J[pi]
                         ax[pi] = R_fit[pi].detach().transpose(0, 1) @ (d / d.norm().clamp_min(1e-6))
                     axis = ((R_fit @ ax[:, :, None]) - (R_t @ ax[:, :, None])).squeeze(-1).pow(2).sum(dim=1) * 3.0
-                    per_part = torch.where(LONG_BONE_MASK.to(self.dev), axis, full)
+                    per_part = torch.where(axis_only_mask, axis, full)
                     losses["orient"] = stage.w_orient * (per_part * R_w).sum() / R_w.sum()
                 if stage.w_pose_reg > 0 and stage.pose_idx:
                     losses["pose_reg"] = stage.w_pose_reg * (prior_w[3:] * (q[:, 3:] - poses_ref[:, 3:]).pow(2)).sum()

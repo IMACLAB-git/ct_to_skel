@@ -89,6 +89,44 @@ class BoneAlignment:
     joint_weight: np.ndarray | None = None             # 1 for aligned parts, 0 otherwise
 
 
+# long bones: the ICP of a shaft-like bone has twist local minima; each is started from several twists about its
+# axis (proximal joint -> child joint) and the best fit is kept.  The margin between the best and the second-best
+# start tells whether the data discriminate the twist at all (if not, the fit only uses the axis direction).
+LONG_BONE_CHILD = {"femur_r": "tibia_r", "tibia_r": "talus_r", "femur_l": "tibia_l", "tibia_l": "talus_l",
+                   "humerus_r": "ulna_r", "ulna_r": "hand_r", "radius_r": "hand_r",
+                   "humerus_l": "ulna_l", "ulna_l": "hand_l", "radius_l": "hand_l"}
+TWIST_STARTS_DEG = (0.0, 60.0, -60.0, 120.0, -120.0, 180.0)
+
+
+def _rot_about(axis: np.ndarray, deg: float, centre: np.ndarray) -> np.ndarray:
+    a = axis / max(np.linalg.norm(axis), 1e-9)
+    th = np.radians(deg)
+    K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
+    R = np.eye(3) + np.sin(th) * K + (1 - np.cos(th)) * (K @ K)
+    T = np.eye(4); T[:3, :3] = R; T[:3, 3] = centre - R @ centre
+    return T
+
+
+def icp_multistart(src: np.ndarray, dst: np.ndarray, centre: np.ndarray, axis: np.ndarray, **kw):
+    """ICP from several initial twists about ``axis`` through ``centre``; returns (T, stats) of the best start with
+    ``stats['twist_margin']`` = (second best - best) / best mean inlier distance and ``stats['twist_start_deg']``."""
+    results = []
+    for deg in TWIST_STARTS_DEG:
+        T0 = _rot_about(axis, deg, centre)
+        T1, st = icp(apply_T(T0, src), dst, **kw)
+        score = st.get("final_mean_mm", np.inf)
+        if not np.isfinite(score) or st.get("final_inlier_frac", 0) < 0.2:
+            score = np.inf
+        results.append((score, deg, T1 @ T0, st))
+    results.sort(key=lambda r: r[0])
+    best = results[0]
+    second = results[1][0] if len(results) > 1 else np.inf
+    st = dict(best[3])
+    st["twist_start_deg"] = float(best[1])
+    st["twist_margin"] = float((second - best[0]) / best[0]) if np.isfinite(second) and best[0] > 0 else 1.0
+    return best[2], st
+
+
 # parts that are aligned together as one rigid unit when only unlabelled CT bone is available
 _RIGID_GROUPS = {"ulna_r": ("ulna_r", "radius_r"), "ulna_l": ("ulna_l", "radius_l"),
                  "tibia_r": ("tibia_r",), "tibia_l": ("tibia_l",),
@@ -130,7 +168,12 @@ def align_bones(skel_verts: np.ndarray, labels: np.ndarray, part_names: list[str
         dst = np.asarray(ct.vertices)
         if len(dst) > 200000:
             dst = dst[rng.choice(len(dst), 200000, replace=False)]
-        T, st = icp(src_fit, dst, allow_scale=allow_scale)
+        child = LONG_BONE_CHILD.get(name)
+        if child in part_names:
+            axis = joints[part_names.index(child)] - joints[pid]
+            T, st = icp_multistart(src_fit, dst, joints[pid], axis, allow_scale=allow_scale)
+        else:
+            T, st = icp(src_fit, dst, allow_scale=allow_scale)
         out.transforms[name] = T
         out.stats[name] = st
         out.verts[sel] = apply_T(T, src)
@@ -215,15 +258,17 @@ def align_bones(skel_verts: np.ndarray, labels: np.ndarray, part_names: list[str
             out.stats[lead]["unlabeled_dst_points"] = int(len(dst))
             if len(dst) < 100:
                 continue
-            T, st = icp(src[near], dst, allow_scale=False, reject_mm=(80.0, 8.0), iters=120)
+            g_axis = (out.joints[_descendants(lead_id)[-1]] if _descendants(lead_id) else src.mean(0)) - e
+            T, st = icp_multistart(src[near], dst, e, g_axis, allow_scale=False, reject_mm=(80.0, 8.0), iters=120)
             # the CT may hold only a short stretch of the forearm (field of view), so judge the fit by the
             # points that found a partner: mean inlier distance and inlier fraction, not the trimmed residual;
             # a group must also stay near where its (already aligned) parent carried it - a hand or foot that
             # slid up the shaft onto the forearm / shank bones is wrong even when its residual is small
             c0 = src.mean(0)
             st["shift_mm"] = float(np.linalg.norm(apply_T(T, c0[None])[0] - c0))
+            max_shift = 60.0 if lead.startswith(("hand", "talus")) else 100.0
             if (st.get("final_inlier_frac", 0) < 0.35 or st.get("final_mean_mm", 99) > 8.0 or st.get("residual_mm", 99) > 25.0
-                    or st["shift_mm"] > 60.0):
+                    or st["shift_mm"] > max_shift):
                 out.stats.setdefault(lead, {})["unlabeled_icp_rejected"] = st
                 if "axis_prealigned_deg" in out.stats.get(lead, {}):
                     # keep the principal-axis alignment as a weak direction target (source "unlabeled_axis")
@@ -241,7 +286,8 @@ def align_bones(skel_verts: np.ndarray, labels: np.ndarray, part_names: list[str
                 out.joints[g] = apply_T(T, out.joints[g:g + 1])[0]
                 out.transforms[part_names[g]] = T @ out.transforms.get(part_names[g], np.eye(4))
                 out.joint_weight[g] = 1.0
-                out.stats.setdefault(part_names[g], {}).update(residual_mm=st["residual_mm"], pairs=st["pairs"], source="unlabeled")
+                out.stats.setdefault(part_names[g], {}).update(residual_mm=st["residual_mm"], pairs=st["pairs"], source="unlabeled",
+                                                              twist_margin=st.get("twist_margin", 1.0))
                 moved.add(g)
             for g in gids:
                 for cid in _descendants(g):
