@@ -57,6 +57,7 @@ def cmd_run(a: argparse.Namespace) -> int:
 
     # 2. segmentation -------------------------------------------------------
     body = body_mask(vol, hu_threshold=a.skin_hu)
+    per_part_masks: dict[str, np.ndarray] = {}
     bone = bone_mask(vol, body, hu_threshold=a.bone_hu)
     _log(f"body voxels {int(body.sum())}, bone voxels {int(bone.sum())}")
     labels = {}
@@ -387,9 +388,51 @@ def cmd_run(a: argparse.Namespace) -> int:
                 for m_ in ct_unlabeled:
                     maj = names_[int(np.bincount(labels_[skel_tree.query(np.asarray(m_.vertices))[1]], minlength=len(names_)).argmax())]
                     bp.append(np.asarray(m_.vertices)); bl.append(piece_vertex_parts(m_, skel_mm, labels_, maj, smooth_iters=0))
+                skel_topo_mesh, skel_topo_W = patient_skin, patient_W
                 patient_skin, patient_W, st2 = merge_extremity_skin(patient_skin, patient_W, ct_skin, np.vstack(bp), np.concatenate(bl), est_ids)
                 refine_info["extremity_skin"] = st2
                 _log(f"extremity skin from CT: {st2}")
+                if not a.no_volumetric_skin and per_part_masks:
+                    # CT-native skin: the patient's own CT surface skinned with weights diffused from the patient's own
+                    # bones through the patient's own soft tissue (no statistical model where the CT exists)
+                    import time as _time
+                    from .volweights import volumetric_weights, sample_weights, rasterise_points
+                    t_v = _time.time()
+                    sources = {}
+                    for p_, m_ in per_part_masks.items():
+                        if p_ in names_:
+                            pid_ = names_.index(p_); sources[pid_] = sources.get(pid_, np.zeros_like(m_)) | m_
+                    to_zyx = lambda v_mm: vol.world_to_index(frame.skel_to_lps(np.asarray(v_mm) / 1000.0))[:, ::-1]
+                    for verts_, parts_ in zip(bp[len(ct_bone_parts):], bl[len(ct_bone_parts):]):
+                        zyx = to_zyx(verts_)
+                        for pid_ in np.unique(parts_):
+                            src = rasterise_points(body.shape, zyx[parts_ == pid_], radius_vox=1)
+                            sources[int(pid_)] = sources.get(int(pid_), np.zeros_like(body)) | src
+                    step_ = 2 if max(vol.spacing) < 2.5 else 1
+                    Wv, ids_ = volumetric_weights(body, sources, step=step_, iters=a.volskin_iters, device=device)
+                    widx, wval = sample_weights(Wv, ids_, to_zyx(np.asarray(ct_skin.vertices)), step=step_)
+                    W_raw = np.zeros((len(ct_skin.vertices), 24), dtype=np.float32)
+                    np.put_along_axis(W_raw, widx.astype(int), wval, axis=1)
+                    # SKEL-topology skin only where the CT has nothing: outside the axial range and estimated limbs
+                    y_lo, y_hi = float(skin_pts[:, 1].min()), float(skin_pts[:, 1].max())
+                    tf = np.asarray(skel_topo_mesh.faces); tv = np.asarray(skel_topo_mesh.vertices)
+                    top_ = skel_topo_W.argmax(1)
+                    outside = ((tv[:, 1] < y_lo + 15.0) | (tv[:, 1] > y_hi - 15.0))[tf].any(axis=1)
+                    est_face = np.isin(top_[tf], est_ids).any(axis=1) if est_ids else np.zeros(len(tf), dtype=bool)
+                    keep_f = outside | est_face
+                    parts_list = [trimesh.Trimesh(np.asarray(ct_skin.vertices), np.asarray(ct_skin.faces), process=False)]
+                    W_list = [W_raw]
+                    if keep_f.any():
+                        ext = trimesh.Trimesh(tv, tf[keep_f], process=False)
+                        keep_v = np.zeros(len(tv), dtype=bool); keep_v[np.unique(tf[keep_f])] = True
+                        ext.remove_unreferenced_vertices()
+                        parts_list.append(ext); W_list.append(skel_topo_W[keep_v])
+                    patient_skin = trimesh.util.concatenate(parts_list) if len(parts_list) > 1 else parts_list[0]
+                    patient_W = np.concatenate(W_list)
+                    refine_info["volumetric_skin"] = {"sources": len(ids_), "grid": list(Wv.shape[1:]), "step": step_,
+                                                      "iters": a.volskin_iters, "ct_faces": int(len(ct_skin.faces)),
+                                                      "skel_faces_kept": int(keep_f.sum()), "seconds": round(_time.time() - t_v, 1)}
+                    _log(f"volumetric patient skin: {refine_info['volumetric_skin']}")
         metrics = evaluate(fit_res, targets)
         if refine_info.get("bone_icp") and "joints_mm" in metrics:
             # after ICP the landmark heuristics are no longer the reference: report them as a consistency check only
@@ -413,7 +456,7 @@ def cmd_run(a: argparse.Namespace) -> int:
         ex.add_mesh(patient_skin, "ct_skin", "ct", "skin", "Patient skin (CT-fitted)", err_ref=skel_skin_mm)
         ex.add_mesh(ct_skin, "ct_surface_raw", "ct", "skin", "CT surface (raw, not posable)", err_ref=skel_skin_mm,
                     hidden=True, static=True)
-        ex.extra["patient_skin"] = "skel_topology"
+        ex.extra["patient_skin"] = "ct_volumetric" if refine_info.get("volumetric_skin") else "skel_topology"
     else:
         ex.add_mesh(ct_skin, "ct_skin", "ct", "skin", "CT skin", err_ref=skel_skin_mm)
     if ct_bone_parts:
@@ -728,6 +771,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--input", "-i", required=True, help="DICOM directory or NIfTI/NRRD/MHA file")
     r.add_argument("--out", "-o", required=True)
     r.add_argument("--case", default=None)
+    r.add_argument("--no-volumetric-skin", action="store_true",
+                   help="skin the CT surface with SKEL-topology weights instead of patient-specific volumetric weights")
+    r.add_argument("--volskin-iters", type=int, default=400, help="diffusion iterations of the volumetric skinning weights")
     r.add_argument("--gate-mm", type=float, default=35.0,
                    help="anatomical gate: CT skin/bone farther than this from the fitted body model is discarded (table, phantoms, cables)")
     r.add_argument("--skin-subdiv", type=int, default=2, help="subdivision levels of the SKEL skin for the patient skin (2 = ~110k vertices)")

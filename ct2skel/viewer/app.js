@@ -323,7 +323,7 @@ function buildFillItems() {
   const aligned = new Set(Object.keys(icp).filter((n) => icp[n] && icp[n].residual_mm !== undefined));
   // with a SKEL-topology patient skin the skin already covers the whole body (parametric where the CT ends)
   const src = items.filter((it) => it.group === 'skel' && (it.kind === 'skin' || it.kind === 'bone') && !it.entry.hidden
-                                   && !(it.kind === 'skin' && manifest.patient_skin === 'skel_topology'));
+                                   && !(it.kind === 'skin' && manifest.patient_skin));
   for (const it of src) {
     const pos = it.mesh.geometry.attributes.position.array;
     const nTri = pos.length / 9, keep = [];

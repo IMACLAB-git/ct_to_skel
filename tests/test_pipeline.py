@@ -385,3 +385,18 @@ def test_part_vertex_mask_chain():
     assert single.tolist() == [True, False, False, False, False, False]
     assert chain.tolist() == [True, True, True, False, False, False]
     assert part_vertex_mask(labels, "pelvis", chain=True).tolist() == [False] * 5 + [True]
+
+
+def test_volumetric_weights_two_bones():
+    """Weights diffuse from two bone sources through a body block, sum to one and switch over between the bones."""
+    from ct2skel.volweights import volumetric_weights, sample_weights
+    body = np.zeros((10, 10, 40), dtype=bool); body[2:8, 2:8, :] = True
+    a = np.zeros_like(body); a[4:6, 4:6, 2:6] = True
+    b = np.zeros_like(body); b[4:6, 4:6, 34:38] = True
+    W, ids = volumetric_weights(body, {3: a, 7: b}, step=1, iters=300, device="cpu")
+    assert ids == [3, 7] and W.shape == (2,) + body.shape
+    tot = W.sum(0)[body]
+    assert np.allclose(tot, 1.0, atol=1e-4)
+    assert W[0, 5, 5, 4] > 0.99 and W[1, 5, 5, 36] > 0.99
+    idx, val = sample_weights(W, ids, np.array([[5, 5, 10.0], [5, 5, 30.0]]), step=1)
+    assert idx[0, 0] == 3 and idx[1, 0] == 7 and np.allclose(val.sum(1), 1.0)
