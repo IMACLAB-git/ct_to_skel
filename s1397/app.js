@@ -161,7 +161,12 @@ function buildTree() {
       it.row = row;
       row.append(c, sw, lab);
       if (it.entry.err_mean_mm !== undefined) {
-        const e = document.createElement('span'); e.className = 'err'; e.textContent = `${it.entry.err_mean_mm.toFixed(1)} mm`; row.appendChild(e);
+        const e = document.createElement('span'); e.className = 'err';
+        const cov = it.entry.err_coverage === undefined ? 1 : it.entry.err_coverage;
+        // a part the CT does not contain (or an estimated limb) has no meaningful error: say so instead of a number
+        e.textContent = it.entry.estimated ? 'estimated' : (cov < 0.15 ? 'outside CT' : `${it.entry.err_mean_mm.toFixed(1)} mm`);
+        e.title = `coverage ${(cov * 100).toFixed(0)} %`;
+        row.appendChild(e);
       }
       det.appendChild(row);
     }
