@@ -365,6 +365,10 @@ def piece_vertex_parts(mesh, skel_verts_mm: np.ndarray, part_labels: np.ndarray,
             onehot = np.stack([(vp == q).astype(np.float32) for q in parts], axis=1)
             votes = A @ onehot + 1.5 * onehot                # a vertex keeps its label unless the neighbours outvote it
             vp = parts[np.argmax(votes, axis=1)]
+    # the SKEL toes joint is not fitted to the CT (the foot pose comes from the prior): CT toe bones would rotate
+    # about a wrong centre, so the whole forefoot moves rigidly with the calcaneus
+    for side in "rl":
+        vp[vp == SKEL_PARTS.index(f"toes_{side}")] = SKEL_PARTS.index(f"calcn_{side}")
     return vp
 
 
