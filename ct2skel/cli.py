@@ -420,6 +420,16 @@ def cmd_run(a: argparse.Namespace) -> int:
                     bone_tree = cKDTree(np.vstack(bp)); lab_b = np.concatenate(bl)[bone_tree.query(np.asarray(ct_skin.vertices))[1]]
                     part_v = np.where(d_s <= 12.0, lab_s, lab_b)
                     widx, wval = gate_weights_by_part(widx, wval, part_v, PARENT)
+                    # hybrid weights: where the CT-refined SKEL skin reaches the CT surface, the CT vertex takes the
+                    # SKEL weights of its corresponding template point (joint deformation exactly as SKEL); the
+                    # patient-specific volumetric weights remain where the template cannot reach (hands, feet, shape
+                    # outside the statistical space)
+                    if a.skin_weights == "hybrid":
+                        from .patient import top_k
+                        t_idx, t_val = top_k(skel_topo_W[nn_s], 4)
+                        use_t = d_s <= 12.0
+                        widx = np.where(use_t[:, None], t_idx, widx); wval = np.where(use_t[:, None], t_val, wval)
+                        refine_info.setdefault("volumetric_skin", {})["template_fraction"] = float(use_t.mean())
                     W_raw = np.zeros((len(ct_skin.vertices), 24), dtype=np.float32)
                     np.put_along_axis(W_raw, widx.astype(int), wval, axis=1)
                     # SKEL-topology skin only where the CT has nothing: outside the axial range and estimated limbs
@@ -783,6 +793,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--no-volumetric-skin", action="store_true",
                    help="skin the CT surface with SKEL-topology weights instead of patient-specific volumetric weights")
     r.add_argument("--volskin-iters", type=int, default=400, help="diffusion iterations of the volumetric skinning weights")
+    r.add_argument("--skin-weights", choices=["hybrid", "volumetric"], default="hybrid",
+                   help="hybrid: SKEL weights via the CT-fitted template where it reaches the CT (<= 12 mm), patient volumetric elsewhere")
     r.add_argument("--gate-mm", type=float, default=35.0,
                    help="anatomical gate: CT skin/bone farther than this from the fitted body model is discarded (table, phantoms, cables)")
     r.add_argument("--skin-subdiv", type=int, default=2, help="subdivision levels of the SKEL skin for the patient skin (2 = ~110k vertices)")
