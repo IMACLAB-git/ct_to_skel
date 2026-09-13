@@ -386,6 +386,34 @@ def cut_bridging_faces(mesh, vparts: np.ndarray):
     return out, vparts[keep_v]
 
 
+def absorb_small_components(mesh, vparts: np.ndarray, min_faces: int = 500) -> np.ndarray:
+    """Small mesh components (fragments cut off at a joint gap, sesamoids, a fibula tip) take the part of the nearest
+    vertex of a large component, so that no fragment can fly off with a bone it does not belong to."""
+    from scipy.spatial import cKDTree
+    comps = mesh.split(only_watertight=False)
+    if len(comps) < 2:
+        return vparts
+    V = np.asarray(mesh.vertices)
+    tree_all = cKDTree(V)
+    big_mask = np.zeros(len(V), dtype=bool)
+    small = []
+    for c in comps:
+        _, vid = tree_all.query(np.asarray(c.vertices))
+        if len(c.faces) >= min_faces:
+            big_mask[vid] = True
+        else:
+            small.append(vid)
+    if not small or not big_mask.any():
+        return vparts
+    big_ids = np.where(big_mask)[0]
+    tree_big = cKDTree(V[big_ids])
+    vp = vparts.copy()
+    for vid in small:
+        _, nb = tree_big.query(V[vid].mean(0))
+        vp[vid] = vparts[big_ids[nb]]
+    return vp
+
+
 def write_bone_weights(out_dir, entries: list[dict], skel_verts_mm: np.ndarray, idx: np.ndarray, val: np.ndarray,
                        part_labels: np.ndarray | None = None) -> dict:
     """Write bone_weights.bin (uint8 idx + float32 w per corner) for every bone-like part; returns the index dict."""
@@ -401,6 +429,7 @@ def write_bone_weights(out_dir, entries: list[dict], skel_verts_mm: np.ndarray, 
             # unlabelled piece: per-vertex part within the limb chain, joint gaps cut, each bone rigid
             vp = piece_vertex_parts(m, skel_verts_mm, part_labels, e["part"])
             m2, vp = cut_bridging_faces(m, vp)
+            vp = absorb_small_components(m2, vp)
             if len(m2.faces) != len(m.faces):
                 m2.export(out / e["file"]); e["faces"] = int(len(m2.faces)); e["vertices"] = int(len(m2.vertices)); m = m2
             corners = np.asarray(m.faces).reshape(-1)
