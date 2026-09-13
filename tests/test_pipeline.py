@@ -400,3 +400,15 @@ def test_volumetric_weights_two_bones():
     assert W[0, 5, 5, 4] > 0.99 and W[1, 5, 5, 36] > 0.99
     idx, val = sample_weights(W, ids, np.array([[5, 5, 10.0], [5, 5, 30.0]]), step=1)
     assert idx[0, 0] == 3 and idx[1, 0] == 7 and np.allclose(val.sum(1), 1.0)
+
+
+def test_gate_weights_by_part():
+    from ct2skel.volweights import gate_weights_by_part
+    from ct2skel.refine import PARENT
+    thorax, humerus_r, scapula_r = SKEL_PARTS.index("thorax"), SKEL_PARTS.index("humerus_r"), SKEL_PARTS.index("scapula_r")
+    widx = np.array([[thorax, humerus_r, scapula_r, 0]], dtype=np.int16)
+    wval = np.array([[0.5, 0.4, 0.1, 0.0]], dtype=np.float32)
+    idx, val = gate_weights_by_part(widx, wval, np.array([thorax]), PARENT)   # chest skin: humerus weight removed
+    assert val[0][list(idx[0]).index(humerus_r)] == 0.0 and np.isclose(val.sum(), 1.0)
+    idx2, val2 = gate_weights_by_part(widx, wval, np.array([humerus_r]), PARENT)  # arm skin: thorax weight removed
+    assert val2[0][list(idx2[0]).index(thorax)] == 0.0 and np.isclose(val2.sum(), 1.0)

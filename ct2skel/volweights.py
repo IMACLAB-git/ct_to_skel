@@ -112,3 +112,24 @@ def rasterise_points(shape: tuple, idx_zyx: np.ndarray, radius_vox: int = 1) -> 
     if radius_vox > 0:
         m = ndi.binary_dilation(m, iterations=radius_vox)
     return m
+
+
+def gate_weights_by_part(widx: np.ndarray, wval: np.ndarray, part_of_vertex: np.ndarray, parent: list[int],
+                         n_parts: int = 24):
+    """Anatomical gate for volumetric weights: a skin vertex assigned to part p may only carry weight of p, its
+    parent and its children in the kinematic tree.  Diffusion alone leaks between limbs and trunk wherever they touch
+    in the CT (an arm lying against the chest); this keeps chest skin on the trunk and arm skin on the arm."""
+    children = {k: [c for c, pa in enumerate(parent) if pa == k] for k in range(n_parts)}
+    allowed = {k: {k} | ({parent[k]} if parent[k] >= 0 else set()) | set(children[k]) for k in range(n_parts)}
+    idx = widx.astype(int).copy(); val = wval.astype(np.float32).copy()
+    out_idx = idx.copy(); out_val = np.zeros_like(val)
+    for v in range(len(idx)):
+        ok = np.array([j in allowed[int(part_of_vertex[v])] for j in idx[v]])
+        out_val[v] = np.where(ok, val[v], 0.0)
+        s_ = out_val[v].sum()
+        if s_ <= 1e-6:
+            out_idx[v] = [int(part_of_vertex[v])] + [0] * (idx.shape[1] - 1)
+            out_val[v] = [1.0] + [0.0] * (idx.shape[1] - 1)
+        else:
+            out_val[v] /= s_
+    return out_idx.astype(np.int16), out_val.astype(np.float32)

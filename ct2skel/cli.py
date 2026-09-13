@@ -411,6 +411,15 @@ def cmd_run(a: argparse.Namespace) -> int:
                     step_ = 2 if max(vol.spacing) < 2.5 else 1
                     Wv, ids_ = volumetric_weights(body, sources, step=step_, iters=a.volskin_iters, device=device)
                     widx, wval = sample_weights(Wv, ids_, to_zyx(np.asarray(ct_skin.vertices)), step=step_)
+                    # anatomical gate: which part does each CT skin vertex belong to?  the CT-refined SKEL skin where
+                    # it reaches the CT (trunk, limbs), the nearest CT bone elsewhere (hands, feet)
+                    from .volweights import gate_weights_by_part
+                    from .refine import PARENT
+                    d_s, nn_s = cKDTree(np.asarray(skel_topo_mesh.vertices)).query(np.asarray(ct_skin.vertices))
+                    lab_s = skel_topo_W.argmax(1)[nn_s]
+                    bone_tree = cKDTree(np.vstack(bp)); lab_b = np.concatenate(bl)[bone_tree.query(np.asarray(ct_skin.vertices))[1]]
+                    part_v = np.where(d_s <= 12.0, lab_s, lab_b)
+                    widx, wval = gate_weights_by_part(widx, wval, part_v, PARENT)
                     W_raw = np.zeros((len(ct_skin.vertices), 24), dtype=np.float32)
                     np.put_along_axis(W_raw, widx.astype(int), wval, axis=1)
                     # SKEL-topology skin only where the CT has nothing: outside the axial range and estimated limbs
