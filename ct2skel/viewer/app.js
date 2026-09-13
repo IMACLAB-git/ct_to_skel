@@ -317,12 +317,17 @@ function buildFillItems() {
   $('fill_row').hidden = false;
   const cw = posesData ? skelSkinCorners() : null;
   const estIdx = new Set(estNames.map((n) => partIndex[n]).filter((i) => i !== undefined));
+  // parts whose bone was aligned to the CT (ICP residual recorded) are patient bones already: never fill them, even
+  // where the SKEL bone pokes a few millimetres past the CT skin extent (e.g. the neutral SKEL foot below a CT foot)
+  const icp = ((manifest.metrics || {}).refine || {}).bone_icp || {};
+  const aligned = new Set(Object.keys(icp).filter((n) => icp[n] && icp[n].residual_mm !== undefined));
   // with a SKEL-topology patient skin the skin already covers the whole body (parametric where the CT ends)
   const src = items.filter((it) => it.group === 'skel' && (it.kind === 'skin' || it.kind === 'bone') && !it.entry.hidden
                                    && !(it.kind === 'skin' && manifest.patient_skin === 'skel_topology'));
   for (const it of src) {
     const pos = it.mesh.geometry.attributes.position.array;
     const nTri = pos.length / 9, keep = [];
+    if (it.kind === 'bone' && aligned.has(it.entry.part) && !estNames.includes(it.entry.part)) continue;
     const wholePart = it.kind === 'bone' && estNames.includes(it.entry.part);
     const skinW = it.kind === 'skin' && estIdx.size && cw && cw.idx.length === nTri * 3 * cw.top ? cw : null;
     for (let t = 0; t < nTri; t++) {
