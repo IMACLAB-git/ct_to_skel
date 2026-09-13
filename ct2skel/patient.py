@@ -167,3 +167,46 @@ def build_patient_skin(model, skin_verts_mm: np.ndarray, ct_skin: trimesh.Trimes
     stats["vertices"] = int(len(V2)); stats["levels"] = int(levels)
     mesh = trimesh.Trimesh(V2, F, process=False)
     return mesh, W, stats
+
+
+# ---------------------------------------------------------------------- CT skin for the extremities
+EXTREMITY_PARTS = ("hand_r", "hand_l", "talus_r", "calcn_r", "toes_r", "talus_l", "calcn_l", "toes_l")
+
+
+def merge_extremity_skin(patient_mesh: trimesh.Trimesh, W: np.ndarray, ct_skin: trimesh.Trimesh,
+                         bone_pts: np.ndarray, bone_parts: np.ndarray, est_ids: list[int], min_faces: int = 300):
+    """Replace the hands / feet of the SKEL-topology patient skin by the patient's own CT skin.
+
+    The SKEL hand and foot are coarse blobs that cannot follow spread fingers or a plantar-flexed foot; the CT skin of
+    these extremities is cut out (CT skin vertices whose nearest CT bone belongs to a hand / foot part) and attached
+    rigidly to that part, while the SKEL skin loses its hand / foot faces.  Estimated (not scanned) extremities keep
+    the SKEL skin.  Returns (mesh, W_dense) with the CT extremity vertices appended."""
+    ext_ids = [SKEL_PARTS.index(n) for n in EXTREMITY_PARTS if SKEL_PARTS.index(n) not in set(est_ids)]
+    if not ext_ids or ct_skin is None or len(ct_skin.faces) == 0 or len(bone_pts) == 0:
+        return patient_mesh, W, {"added_faces": 0}
+    part_of_ct = bone_parts[cKDTree(np.asarray(bone_pts)).query(np.asarray(ct_skin.vertices))[1]]
+    f = np.asarray(ct_skin.faces)
+    ext_face = np.isin(part_of_ct[f], ext_ids).all(axis=1)
+    if not ext_face.any():
+        return patient_mesh, W, {"added_faces": 0}
+    ext = trimesh.Trimesh(np.asarray(ct_skin.vertices), f[ext_face], process=False)
+    ext.remove_unreferenced_vertices()
+    comps = [c for c in ext.split(only_watertight=False) if len(c.faces) >= min_faces]
+    if not comps:
+        return patient_mesh, W, {"added_faces": 0}
+    ext = trimesh.util.concatenate(comps) if len(comps) > 1 else comps[0]
+    ext_parts = bone_parts[cKDTree(np.asarray(bone_pts)).query(np.asarray(ext.vertices))[1]]
+    # SKEL skin: drop the hand / foot faces (any corner dominated by an extremity part)
+    top = W.argmax(1)
+    pf = np.asarray(patient_mesh.faces)
+    keep = ~np.isin(top[pf], ext_ids).any(axis=1)
+    base = trimesh.Trimesh(np.asarray(patient_mesh.vertices), pf[keep], process=False)
+    keep_v = np.zeros(len(patient_mesh.vertices), dtype=bool); keep_v[np.unique(pf[keep])] = True
+    base.remove_unreferenced_vertices()
+    W_base = W[keep_v]
+    W_ext = np.zeros((len(ext.vertices), W.shape[1]), dtype=np.float32)
+    W_ext[np.arange(len(ext.vertices)), ext_parts] = 1.0
+    merged = trimesh.util.concatenate([base, ext])
+    W_all = np.concatenate([W_base, W_ext])
+    return merged, W_all, {"added_faces": int(len(ext.faces)), "removed_skel_faces": int((~keep).sum()),
+                           "parts": sorted({SKEL_PARTS[i] for i in np.unique(ext_parts)})}

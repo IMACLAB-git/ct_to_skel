@@ -53,6 +53,7 @@ def error_ply(mesh: trimesh.Trimesh, ref_pts: np.ndarray, err_max_mm: float, pat
     m = mesh.copy()
     m.visual.vertex_colors = colors
     m.export(path)
+    error_ply.last_coverage = float(inside.mean())
     return d[inside] if inside.any() else d
 
 
@@ -87,6 +88,9 @@ class CaseExporter:
             entry["err_file"] = f"ply/{p.name}"
             entry["err_mean_mm"] = float(d.mean())
             entry["err_p95_mm"] = float(np.percentile(d, 95))
+            entry["err_coverage"] = float(getattr(error_ply, "last_coverage", 1.0))   # fraction of vertices inside the CT
+            if part is not None and part in getattr(self, "estimated_parts", ()):
+                entry["estimated"] = True
         self.parts.append(entry)
 
     def write(self, metrics: dict | None = None, fit: dict | None = None, joints_skel: np.ndarray | None = None,

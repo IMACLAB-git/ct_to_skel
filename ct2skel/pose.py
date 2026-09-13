@@ -346,6 +346,42 @@ def part_vertex_mask(part_labels: np.ndarray | None, part: str, chain: bool = Fa
     return lab == SKEL_PARTS.index(part)
 
 
+def piece_vertex_parts(mesh, skel_verts_mm: np.ndarray, part_labels: np.ndarray, part: str, smooth_iters: int = 3) -> np.ndarray:
+    """Per-vertex SKEL part of an unlabelled bone piece: nearest fitted SKEL skeleton vertex within the piece's limb
+    chain, then a majority filter over the mesh graph so that single mislabelled vertices do not fly off when the
+    neighbouring joint moves."""
+    from scipy.spatial import cKDTree
+    import scipy.sparse as sp
+    allowed = part_vertex_mask(part_labels, part, chain=True)
+    lab = np.asarray(part_labels)
+    sub = np.where(allowed)[0] if allowed is not None and allowed.any() else np.arange(len(lab))
+    _, nn = cKDTree(np.asarray(skel_verts_mm)[sub]).query(np.asarray(mesh.vertices))
+    vp = lab[sub[nn]].astype(np.int64)
+    if smooth_iters > 0 and len(mesh.faces):
+        E = mesh.edges_unique; n = len(vp)
+        A = sp.coo_matrix((np.ones(2 * len(E)), (np.r_[E[:, 0], E[:, 1]], np.r_[E[:, 1], E[:, 0]])), shape=(n, n)).tocsr()
+        parts = np.unique(vp)
+        for _ in range(smooth_iters):
+            onehot = np.stack([(vp == q).astype(np.float32) for q in parts], axis=1)
+            votes = A @ onehot + 1.5 * onehot                # a vertex keeps its label unless the neighbours outvote it
+            vp = parts[np.argmax(votes, axis=1)]
+    return vp
+
+
+def cut_bridging_faces(mesh, vparts: np.ndarray):
+    """Drop faces whose corners belong to different parts (the joint gap between two bones that the CT resolution
+    merged into one piece), so that each bone moves rigidly and nothing stretches across the joint."""
+    import trimesh
+    f = np.asarray(mesh.faces)
+    same = (vparts[f[:, 0]] == vparts[f[:, 1]]) & (vparts[f[:, 1]] == vparts[f[:, 2]])
+    if same.all():
+        return mesh, vparts
+    out = trimesh.Trimesh(np.asarray(mesh.vertices), f[same], process=False)
+    keep_v = np.zeros(len(mesh.vertices), dtype=bool); keep_v[np.unique(f[same])] = True
+    out.remove_unreferenced_vertices()
+    return out, vparts[keep_v]
+
+
 def write_bone_weights(out_dir, entries: list[dict], skel_verts_mm: np.ndarray, idx: np.ndarray, val: np.ndarray,
                        part_labels: np.ndarray | None = None) -> dict:
     """Write bone_weights.bin (uint8 idx + float32 w per corner) for every bone-like part; returns the index dict."""
@@ -357,8 +393,17 @@ def write_bone_weights(out_dir, entries: list[dict], skel_verts_mm: np.ndarray, 
         if e["kind"] not in ("bone", "bone_tpl") or not e.get("part"):
             continue
         m = trimesh.load(out / e["file"])
-        ci, cv = bone_corner_weights(m, skel_verts_mm, idx, val,
-                                     allowed=part_vertex_mask(part_labels, e["part"], chain=e["id"].startswith("ct_bone_unlab_")))
+        if e["id"].startswith("ct_bone_unlab_") and part_labels is not None and e["part"] in SKEL_PARTS:
+            # unlabelled piece: per-vertex part within the limb chain, joint gaps cut, each bone rigid
+            vp = piece_vertex_parts(m, skel_verts_mm, part_labels, e["part"])
+            m2, vp = cut_bridging_faces(m, vp)
+            if len(m2.faces) != len(m.faces):
+                m2.export(out / e["file"]); e["faces"] = int(len(m2.faces)); e["vertices"] = int(len(m2.vertices)); m = m2
+            corners = np.asarray(m.faces).reshape(-1)
+            ci = np.zeros((len(corners), idx.shape[1]), dtype=np.int16); ci[:, 0] = vp[corners]
+            cv = np.zeros((len(corners), idx.shape[1]), dtype=np.float32); cv[:, 0] = 1.0
+        else:
+            ci, cv = bone_corner_weights(m, skel_verts_mm, idx, val, allowed=part_vertex_mask(part_labels, e["part"]))
         n = len(ci)
         parts[e["id"]] = {"offset": offset, "n": n}
         chunks.append(ci.astype(np.uint8).tobytes() + cv.astype(np.float32).tobytes())

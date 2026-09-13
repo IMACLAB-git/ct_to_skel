@@ -15,6 +15,7 @@ from pathlib import Path
 
 import numpy as np
 import trimesh
+from scipy.spatial import cKDTree
 
 from . import __version__
 from .dicom_io import load_volume, save_volume, write_dicom_series
@@ -186,15 +187,20 @@ def cmd_run(a: argparse.Namespace) -> int:
         ref_skin, ref_skel = fit_res["skin_verts"] * 1000.0, fit_res["skel_verts"] * 1000.0
         n_skin0, n_bone0 = len(ct_skin.faces), len(ct_bone.faces)
         ct_skin = gate_mesh_by_distance(ct_skin, ref_skin, a.gate_mm)
-        ct_bone = gate_mesh_by_distance(ct_bone, ref_skel, a.gate_mm)
-        ct_unlabeled, dropped = gate_pieces(ct_unlabeled, ref_skel, a.gate_mm + 45.0,
-                                            skin_mesh=trimesh.Trimesh(ref_skin, model.skin_f.cpu().numpy(), process=False))
+        skin_env = trimesh.Trimesh(ref_skin, model.skin_f.cpu().numpy(), process=False)
+        ct_unlabeled, dropped = gate_pieces(ct_unlabeled, ref_skel, a.gate_mm + 45.0, skin_mesh=skin_env)
         n_isl = 0
         labels_v0 = bone_part_labels(model)
         for p_, m_ in list(ct_bone_parts.items()):            # islands of a label far from ITS OWN bone (segmentation noise)
             ref_part = ref_skel[labels_v0 == part_names(model).index(p_)] if p_ in part_names(model) else ref_skel
             ct_bone_parts[p_], k_ = gate_components(m_, ref_part if len(ref_part) else ref_skel, a.gate_mm)
             n_isl += k_
+        if ct_bone_parts:
+            # the bone union (error reference + bone fit targets) = the gated labelled bones + the kept pieces, so it
+            # can never lose a limb the first fit had not reached yet
+            ct_bone = trimesh.util.concatenate([m_ for m_ in list(ct_bone_parts.values()) + list(ct_unlabeled) if len(m_.faces)])
+        else:
+            ct_bone, _ = gate_components(ct_bone, ref_skel, a.gate_mm + 45.0)
         _log(f"anatomical gate ({a.gate_mm} mm from the fitted body model): skin faces {n_skin0} -> {len(ct_skin.faces)}, "
              f"bone faces {n_bone0} -> {len(ct_bone.faces)}, unlabelled pieces dropped {len(dropped)}, label islands dropped {n_isl}")
         skin_pts, _ = sample_surface(ct_skin, 40000)
@@ -369,6 +375,21 @@ def cmd_run(a: argparse.Namespace) -> int:
                                                              y_range_mm=(y_lo, y_hi), levels=a.skin_subdiv)
             refine_info["patient_skin"] = st
             _log(f"patient skin (SKEL topology, {st['vertices']} vertices): {st}")
+            # hands / feet: the patient's own CT skin, attached rigidly to the hand / foot bones
+            if ct_bone_parts:
+                from .patient import merge_extremity_skin
+                from .pose import piece_vertex_parts
+                names_ = part_names(model); labels_ = bone_part_labels(model); skel_mm = fit_res["skel_verts"] * 1000.0
+                bp, bl = [], []
+                for n_, m_ in ct_bone_parts.items():
+                    bp.append(np.asarray(m_.vertices)); bl.append(np.full(len(m_.vertices), names_.index(n_)))
+                skel_tree = cKDTree(skel_mm)
+                for m_ in ct_unlabeled:
+                    maj = names_[int(np.bincount(labels_[skel_tree.query(np.asarray(m_.vertices))[1]], minlength=len(names_)).argmax())]
+                    bp.append(np.asarray(m_.vertices)); bl.append(piece_vertex_parts(m_, skel_mm, labels_, maj, smooth_iters=0))
+                patient_skin, patient_W, st2 = merge_extremity_skin(patient_skin, patient_W, ct_skin, np.vstack(bp), np.concatenate(bl), est_ids)
+                refine_info["extremity_skin"] = st2
+                _log(f"extremity skin from CT: {st2}")
         metrics = evaluate(fit_res, targets)
         if refine_info.get("bone_icp") and "joints_mm" in metrics:
             # after ICP the landmark heuristics are no longer the reference: report them as a consistency check only
@@ -380,6 +401,7 @@ def cmd_run(a: argparse.Namespace) -> int:
     # 6. export ----------------------------------------------------------------------
     ex = CaseExporter(out, case, gender, frame, err_max_mm=a.err_max,
                       bbox_mm=np.stack([skin_pts.min(0), skin_pts.max(0)]) if len(skin_pts) else None)
+    ex.estimated_parts = tuple(est_names) if fit_res is not None else ()
     if not a.no_volume:
         from .export import export_ct_volume
         ex.extra["ct_volume"] = export_ct_volume(vol, frame, out, max_inplane=a.volume_res)
